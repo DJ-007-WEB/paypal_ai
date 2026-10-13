@@ -19,6 +19,29 @@ function createApp({
   const app = express();
 
   app.disable('x-powered-by');
+
+  // Restrict browser access to explicitly configured frontend origins.
+  // Defaults cover local Vite development; deployments should set FRONTEND_ORIGIN.
+  const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  app.use((req, res, next) => {
+    const origin = req.get('Origin');
+    if (origin && allowedOrigins.includes(origin)) {
+      res.set('Access-Control-Allow-Origin', origin);
+      res.set('Vary', 'Origin');
+      res.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+      res.set('Access-Control-Allow-Headers', 'Content-Type,X-Request-Id');
+    }
+
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(origin && !allowedOrigins.includes(origin) ? 403 : 204);
+    }
+    return next();
+  });
+
   app.use(express.json({ limit: '1mb' }));
   app.use((req, res, next) => {
     const requestId = req.get('x-request-id') || req.body?.requestId || randomUUID();
