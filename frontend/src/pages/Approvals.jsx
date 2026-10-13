@@ -1,0 +1,1 @@
+// Placeholder: Render pending manager approvals with purchase details, policy findings, and approve/reject actions.
