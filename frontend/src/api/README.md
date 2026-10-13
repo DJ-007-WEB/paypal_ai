@@ -1,0 +1,1 @@
+<!-- Placeholder: Frontend API client functions for communicating with the backend will live here. -->
