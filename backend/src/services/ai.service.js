@@ -1,0 +1,1 @@
+// Placeholder: Coordinate AI calls for requirement interpretation, vendor communication, comparison, and structured proposals.
