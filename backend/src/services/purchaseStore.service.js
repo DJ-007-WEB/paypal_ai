@@ -1,43 +1,34 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
+function cloneValue(value) { return JSON.parse(JSON.stringify(value)); }
 
-function cloneValue(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
-function createPurchaseStore() {
+function createPurchaseStore({ collection } = {}) {
   const store = new Map();
-
   return {
-    create(record) {
+    async create(record) {
       const purchaseId = record.purchaseId || `purchase_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
-      const entry = {
-        ...cloneValue(record),
-        purchaseId,
-        createdAt: new Date().toISOString(),
-      };
-      store.set(purchaseId, cloneValue(entry));
+      const entry = { ...cloneValue(record), purchaseId, createdAt: record.createdAt || new Date().toISOString() };
+      if (collection) await collection.insertOne(entry);
+      else store.set(purchaseId, cloneValue(entry));
       return cloneValue(entry);
     },
-    upsert(purchaseId, updater) {
-      const current = store.get(purchaseId) || { purchaseId };
-      const next = updater(cloneValue(current));
+    async upsert(purchaseId, updater) {
+      const current = collection ? (await collection.findOne({ purchaseId })) : store.get(purchaseId);
+      const next = updater(cloneValue(current || { purchaseId }));
       const entry = { ...cloneValue(next), purchaseId };
-      store.set(purchaseId, cloneValue(entry));
+      if (collection) await collection.replaceOne({ purchaseId }, entry, { upsert: true });
+      else store.set(purchaseId, cloneValue(entry));
       return cloneValue(entry);
     },
-    getById(purchaseId) {
-      const entry = store.get(purchaseId);
-      if (!entry) {
-        return null;
-      }
-      return cloneValue(entry);
+    async getById(purchaseId) {
+      const entry = collection ? await collection.findOne({ purchaseId }) : store.get(purchaseId);
+      return entry ? cloneValue(entry) : null;
     },
-    list() {
-      return Array.from(store.values()).map((entry) => cloneValue(entry));
+    async list() {
+      const entries = collection ? await collection.find({}).sort({ createdAt: -1 }).toArray() : Array.from(store.values());
+      return entries.map(cloneValue);
     },
   };
 }
-
 module.exports = { createPurchaseStore };
