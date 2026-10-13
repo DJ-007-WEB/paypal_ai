@@ -1,0 +1,1 @@
+// Placeholder: Persistence model for PayPal order, authorization, and capture identifiers; idempotency; and payment status.
