@@ -1,0 +1,1 @@
+// Placeholder: Render the business overview, active purchases, budget usage, and recent activity.
