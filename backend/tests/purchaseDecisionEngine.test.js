@@ -69,7 +69,7 @@ test('duplicate IDs cannot enter ranking twice', () => {
 });
 test('currency exponents are explicit', () => {
   assert.match(evaluatePurchaseRequest(request({currency:'JPY',maxTotalMinor:50000}),[offer({currency:'JPY',unitPriceMinor:400})]).explanation,/JPY 40000/);
-  assert.match(evaluatePurchaseRequest(request({currency:'KWD'}),[offer({currency:'KWD',unitPriceMinor:40000}]).explanation,/KWD 4000\.000/);
+  assert.match(evaluatePurchaseRequest(request({currency:'KWD'}), [offer({currency:'KWD',unitPriceMinor:40000})]).explanation, /KWD 4000\\.000/);
 });
 test('invalid weights are rejected', () => {
   assert.equal(evaluatePurchaseRequest(request({rankingWeights:{cost:0,delivery:0}}),[offer()]).status,'INVALID_REQUEST');
