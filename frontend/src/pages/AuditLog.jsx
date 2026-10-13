@@ -1,0 +1,1 @@
+// Placeholder: Render searchable audit events, decision explanations, and payment lifecycle history.
