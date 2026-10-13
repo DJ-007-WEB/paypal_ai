@@ -43,7 +43,23 @@ function createApp({
     return next();
   });
 
+
   app.use(express.json({ limit: '1mb' }));
+
+  // Log every API request with status, duration, and a correlation ID.
+  app.use((req, res, next) => {
+    const startedAt = process.hrtime.bigint();
+    const requestId = req.get('x-request-id') || randomUUID();
+    req.id = requestId;
+    req.requestId = requestId;
+    res.set('X-Request-Id', requestId);
+    res.on('finish', () => {
+      const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+      console.log('[' + new Date().toISOString() + '] ' + req.method + ' ' + req.originalUrl + ' ' + res.statusCode + ' ' + durationMs.toFixed(1) + 'ms requestId=' + requestId);
+    });
+    next();
+  });
+
   app.use((req, res, next) => {
     const requestId = req.get('x-request-id') || req.body?.requestId || randomUUID();
     req.id = requestId;
@@ -79,13 +95,22 @@ function createApp({
   app.use((err, req, res, next) => {
     const statusCode = Number.isInteger(err.statusCode) ? err.statusCode : 500;
     const code = err.code || (statusCode === 404 ? 'NOT_FOUND' : statusCode >= 500 ? 'INTERNAL_SERVER_ERROR' : 'REQUEST_FAILED');
-    const message = statusCode >= 500 ? 'An unexpected server error occurred.' : (err.message || 'Request failed.');
+
+    const requestId = req.requestId || req.id || null;
+    if (statusCode >= 500) {
+      console.error('[API ERROR] requestId=' + requestId + ' ' + req.method + ' ' + req.originalUrl);
+      console.error(err && err.stack ? err.stack : err);
+    }
+    const message = statusCode >= 500
+      ? (process.env.NODE_ENV === 'development' ? (err.message || 'Internal server error.') : 'An unexpected server error occurred.')
+      : (err.message || 'Request failed.');
 
     const payload = {
       success: false,
       error: {
         code,
         message,
+        requestId,
       },
     };
 

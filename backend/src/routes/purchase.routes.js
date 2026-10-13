@@ -130,6 +130,7 @@ function createPurchaseRoutes({ vendorService, auditService, purchaseStore }) {
         meta: { requestId },
       });
     } catch (error) {
+      console.error('[PURCHASE EVALUATION FAILED] requestId=' + (req.requestId || 'unassigned'), error && error.stack ? error.stack : error);
       next(error);
     }
   });
