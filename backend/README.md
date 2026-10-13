@@ -1,0 +1,1 @@
+<!-- Placeholder: This directory will contain the Node.js/Express backend. Add setup and API instructions here later. -->
