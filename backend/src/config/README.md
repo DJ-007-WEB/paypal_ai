@@ -1,0 +1,1 @@
+<!-- Placeholder: Backend configuration for environment variables, database connections, AI providers, and PayPal will live here. -->
