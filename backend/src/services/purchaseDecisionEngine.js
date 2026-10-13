@@ -131,7 +131,7 @@ function validateOffer(offer, index, quantity) {
 
 function evaluatePurchaseRequest(request, offers) {
   const validated = validateRequest(request);
-  if (validated.errors) return invalidRequest(validated.errors);
+  if (Array.isArray(validated)) return invalidRequest(validated);
   if (!Array.isArray(offers)) return invalidRequest([{ field: 'offers', message: 'offers must be an array' }]);
   const req = validated.normalized;
   const rejected = [];
