@@ -17,3 +17,22 @@ export async function getHealth() {
   if (!response.ok) throw new Error('API health check failed');
   return response.json();
 }
+
+export async function importVendors(offers) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/vendors/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ offers }),
+    });
+  } catch {
+    throw new Error(`Could not reach the Mandate API at ${API_BASE_URL}. Check that the backend is running.`);
+  }
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.success === false) {
+    const details = Array.isArray(body.details) ? body.details.map(item => item.message).join(' ') : '';
+    throw new Error([body.error?.message || body.message || `Vendor import failed (HTTP ${response.status}).`, details].filter(Boolean).join(' '));
+  }
+  return body.data;
+}
