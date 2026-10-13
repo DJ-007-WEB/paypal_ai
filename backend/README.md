@@ -1,148 +1,83 @@
 # Mandate Backend API
 
 ## Prerequisites
-
 - Node.js 18.18.0 or later
 - npm 9+
-- A local shell with access to the workspace
+- A reachable MongoDB instance
 
 ## Installation
-
 From the backend directory:
-
 ```bash
 npm install
 ```
 
 ## Environment configuration
-
-Copy the example environment file from the project root:
-
+Copy the example environment file from the project root to the backend directory:
 ```bash
 cp ../.env.example .env
 ```
-
-The API currently uses the following environment variables:
+Set `MONGODB_URI` in `backend/.env` to your connection string. Do not commit or share that file.
 
 ```env
 PORT=3000
 NODE_ENV=development
+FRONTEND_ORIGIN=http://localhost:5173,http://127.0.0.1:5173
+MONGODB_URI=mongodb://127.0.0.1:27017/mandate
+MONGODB_DB_NAME=mandate
 ```
 
-The app does not require a database or external AI credentials for this milestone. In-memory stores are used for purchases and audit logs and are intentionally not durable across restarts.
+MongoDB is required at startup. Vendor offers are read from the `vendorOffers` collection. Purchase records and audit logs still use in-memory stores in this milestone and are not durable across restarts.
 
-## Development command
-
+## Commands
 ```bash
 npm run dev
-```
-
-## Production command
-
-```bash
 npm start
-```
-
-## Test command
-
-```bash
 npm test
 ```
 
 ## API endpoints
+- `GET /api/health`
+- `GET /api/vendors`
+- `POST /api/vendors/import`
+- `POST /api/purchases/evaluate`
+- `GET /api/purchases/:purchaseId`
+- Approval, payment and mandate routes intentionally return 501. No real payment authorization or execution is active.
 
-### Health
-
-- GET /api/health
-
-### Purchase evaluation
-
-- POST /api/purchases/evaluate
-
-### Purchase history lookup
-
-- GET /api/purchases/:purchaseId
-
-### Approval and payment endpoints
-
-- Approval and payment routes are intentionally not implemented in this milestone.
-- These endpoints return a clear 501 response and require separate human approval logic in a future milestone.
-
-## Example request payload
-
+## Vendor offer import
+Send JSON to `POST /api/vendors/import`:
 ```json
 {
-  "productId": "BRG-6204",
-  "quantity": 100,
-  "maxTotalMinor": 5000000,
-  "currency": "INR",
-  "maxDeliveryDays": 5,
-  "requireApprovedVendor": true,
-  "minQualityScore": 80,
-  "minReliabilityScore": 80
+  "offers": [{
+    "offerId": "offer-001",
+    "vendorId": "vendor-001",
+    "vendorName": "Example Supplier",
+    "productId": "BRG-6204",
+    "currency": "INR",
+    "unitPriceMinor": 125000,
+    "availableQuantity": 100,
+    "deliveryDays": 4,
+    "shippingMinor": 0,
+    "taxMinor": 22500,
+    "feesMinor": 0,
+    "vendorApproved": true,
+    "qualityScore": 90,
+    "reliabilityScore": 92,
+    "active": true
+  }]
 }
 ```
+Amounts are integer minor units (INR paise). Shipping, tax and fees must be explicit, even when their value is zero. The importer validates input and upserts by `offerId`.
 
-## Example response
+## Request flow
+1. Express validates the incoming purchase request.
+2. Vendor service queries active offers in MongoDB for the requested product.
+3. The deterministic decision engine ranks eligible offers.
+4. A separate policy service validates hard constraints.
+5. Audit events and purchase records are currently stored in memory.
+6. The response returns a recommendation and policy findings, never payment authorization.
 
-```json
-{
-  "success": true,
-  "data": {
-    "purchaseId": "purchase_4cf8f1f9d81d",
-    "decision": {
-      "status": "RECOMMENDED",
-      "recommendedOfferId": "low-cost",
-      "recommendedVendorId": "vendor-low"
-    },
-    "policy": {
-      "passed": true,
-      "violations": [],
-      "paymentAuthorized": false
-    },
-    "explanation": "Evaluated 5 offer(s); 1 eligible and 4 rejected. Recommended low-cost from vendor-low at INR 4,250,000. This is a recommendation only; policy validation and human approval are required before payment.",
-    "uncertainties": [],
-    "authorization": {
-      "paymentAuthorized": false,
-      "requiresHumanApproval": true
-    }
-  },
-  "meta": {
-    "requestId": "4a0b0d9b-71d2-4fb4-a36a-c930d7b5f9d3"
-  }
-}
-```
-
-## Architecture and request flow
-
-1. The request enters the Express app with correlation IDs and JSON parsing enabled.
-2. Purchase requests are validated against the deterministic engine contract before evaluation is attempted.
-3. The vendor service returns mock offers for the requested product.
-4. The purchase decision engine chooses the best eligible offer using deterministic score calculations.
-5. A separate policy service validates the selected recommendation against hard constraints and configured business rules.
-6. Audit events are recorded in memory for all important stages.
-7. The completed evaluation is stored in an in-memory purchase repository and can be retrieved by purchase ID.
-
-This preserves a clean separation between ranking logic, policy enforcement, and audit capture.
-
-## Current limitations
-
-- Purchase and audit data are kept in memory only and are lost when the backend process restarts.
-- Approval and payment execution are intentionally not implemented in this milestone.
-- Real vendor APIs, external AI calls, and database persistence are deliberately out of scope for this phase.
-- The API does not perform payment authorization or payment execution. It only provides deterministic evaluation and policy checks.
-
-## Replacing in-memory stores with persistent storage
-
-The design currently exposes storage behind a small service interface. To replace the in-memory repository later:
-
-- implement a new repository backed by a database or another durable system,
-- keep the same create/getById/list contract,
-- continue returning deep-cloned records so callers cannot mutate internal state,
-- keep the route handlers and app bootstrap unchanged.
-
-The same pattern applies to audit storage and vendor data access.
-
-## Payment boundary
-
-This milestone does not implement real payment execution. Any payment authorization or capture flow remains intentionally disabled and must require explicit human approval in a later milestone. The evaluation API only returns `paymentAuthorized: false` and does not infer authorization from a client-supplied value.
+## Limitations
+- Purchase and audit storage is still in-memory and resets on restart.
+- Spreadsheet upload UI is not yet connected to the import API.
+- Approval and payment execution remain disabled.
+- No external AI call or real PayPal payment flow is active.
