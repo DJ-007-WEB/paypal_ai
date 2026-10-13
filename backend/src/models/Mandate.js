@@ -1,0 +1,1 @@
+// Placeholder: Persistence model for mandate limits, approved vendors, expiry, purchasing mode, and mandate version.
