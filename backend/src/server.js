@@ -5,6 +5,8 @@ require('dotenv').config();
 const { MongoClient } = require('mongodb');
 const { createApp } = require('./app');
 const { createVendorService } = require('./services/vendor.service');
+const { createPurchaseStore } = require('./services/purchaseStore.service');
+const { createAuditService } = require('./services/audit.service');
 
 const PORT = Number(process.env.PORT || 3000);
 const MONGODB_URI = process.env.MONGODB_URI;
@@ -24,8 +26,18 @@ async function start() {
   await vendorCollection.createIndex({ offerId: 1 }, { unique: true });
   await vendorCollection.createIndex({ productId: 1, active: 1 });
 
+  const purchaseCollection = db.collection('purchaseRecords');
+  const auditCollection = db.collection('auditEvents');
+  await purchaseCollection.createIndex({ purchaseId: 1 }, { unique: true });
+  await purchaseCollection.createIndex({ createdAt: -1 });
+  await auditCollection.createIndex({ eventId: 1 }, { unique: true });
+  await auditCollection.createIndex({ requestId: 1, timestamp: 1 });
+  await auditCollection.createIndex({ purchaseId: 1, timestamp: 1 });
+
   const app = createApp({
     vendorService: createVendorService({ collection: vendorCollection }),
+    purchaseStore: createPurchaseStore({ collection: purchaseCollection }),
+    auditService: createAuditService({ collection: auditCollection }),
   });
 
   const server = app.listen(PORT, () => {
