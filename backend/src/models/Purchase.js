@@ -1,0 +1,1 @@
+// Placeholder: Persistence model for purchase requirements, quotations, policy decisions, approvals, and workflow state.
