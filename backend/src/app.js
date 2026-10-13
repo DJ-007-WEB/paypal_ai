@@ -12,7 +12,7 @@ const { createAuditService } = require('./services/audit.service');
 const { createPurchaseStore } = require('./services/purchaseStore.service');
 
 function createApp({
-  vendorService = createVendorService(),
+  vendorService,
   auditService = createAuditService(),
   purchaseStore = createPurchaseStore(),
 } = {}) {
