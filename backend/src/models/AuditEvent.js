@@ -1,0 +1,1 @@
+// Placeholder: Persistence model for timestamped audit events, policy outcomes, and decision explanations.
