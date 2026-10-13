@@ -1,0 +1,1 @@
+// Placeholder: Record append-oriented audit events with decision reasons and payment lifecycle changes.
