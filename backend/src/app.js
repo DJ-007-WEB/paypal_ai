@@ -4,6 +4,7 @@ const express = require('express');
 const { randomUUID } = require('node:crypto');
 
 const { createPurchaseRoutes } = require('./routes/purchase.routes');
+const { createVendorRoutes } = require('./routes/vendor.routes');
 const { createApprovalRoutes } = require('./routes/approval.routes');
 const { createPaymentRoutes } = require('./routes/payment.routes');
 const { createMandateRoutes } = require('./routes/mandate.routes');
@@ -63,6 +64,7 @@ function createApp({
 
   const purchaseRouter = createPurchaseRoutes({ vendorService, auditService, purchaseStore });
   app.use('/api', purchaseRouter);
+  app.use('/api', createVendorRoutes({ vendorService }));
   app.use('/api', createApprovalRoutes());
   app.use('/api', createPaymentRoutes());
   app.use('/api', createMandateRoutes());
