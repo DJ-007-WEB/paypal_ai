@@ -1,0 +1,1 @@
+<!-- Placeholder: Shared UI components will live here, including navigation, status badges, tables, and reusable forms. -->
