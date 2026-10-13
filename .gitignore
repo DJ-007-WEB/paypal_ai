@@ -1,1 +1,13 @@
-# Placeholder: Add generated dependencies, build output, local environment files, logs, and editor/OS artifacts to ignore.
+node_modules/
+backend/node_modules/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+backend/.cache/
+backend/logs/
