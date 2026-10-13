@@ -52,7 +52,7 @@ function ForgotPassword() { return <div className="auth-page"><header className=
 
 function Onboarding({ user, onComplete }) {
   const [step, setStep] = useState(0);
-  const [business, setBusiness] = useState(() => ({ ...initialBusiness, fullName: user.fullName || '', email: user.email || '', businessName: user.businessName || '', legalName: user.businessName || '' }));
+  const [business, setBusiness] = useState(() => ({ ...initialBusiness, ...(readStore() || {}), fullName: user.fullName || '', email: user.email || '', businessName: user.businessName || readStore()?.businessName || '', legalName: user.businessName || readStore()?.legalName || '' }));
   const [fileInfo, setFileInfo] = useState(null);
   const [sheetNames, setSheetNames] = useState([]);
   const [sheetName, setSheetName] = useState('');
@@ -71,7 +71,7 @@ function Onboarding({ user, onComplete }) {
     const ws = workbook.Sheets[name]; const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
     const hs = (data[0] || []).map((h,i)=>String(h || `Column ${i+1}`).trim());
     const body = data.slice(1).filter(row=>row.some(cell=>String(cell ?? '').trim() !== '')).map((row,i)=>({ __row: i+2, values: hs.map((_,j)=>row[j] ?? '') }));
-    setSheetName(name); setHeaders(hs); setRows(body); setMapping(Object.fromEntries(['vendorName','vendorId','productId','currency','unitPrice','quantity','shipping','tax','deliveryDays','approved','quality','reliability','email','website'].map(field=>[field,hs.find(h=>h.toLowerCase().replace(/[^a-z]/g,'').includes(({vendorName:'vendorname suppliername vendor supplier',vendorId:'vendorid supplierid suppliercode',productId:'productid sku productcode product',currency:'currency',unitPrice:'unitprice price unitcost cost',quantity:'quantity stock availablequantity',shipping:'shipping freight',tax:'tax',deliveryDays:'deliverydays leadtime delivery',approved:'approved approvedvendor status',quality:'quality qualityscore',reliability:'reliability reliabilityscore',email:'email contactemail',website:'website url'}[field]).split(' ').find(word=>h.toLowerCase().replace(/[^a-z]/g,'').includes(word)) || '\u0000')) || ''])));
+    setSheetName(name); setHeaders(hs); setRows(body); const aliases = { vendorName:['vendorname','suppliername','vendor','supplier'], vendorId:['vendorid','supplierid','suppliercode'], productId:['productid','sku','productcode','product'], currency:['currency'], unitPrice:['unitprice','price','unitcost','cost'], quantity:['quantity','stock','availablequantity'], shipping:['shipping','freight'], tax:['tax'], deliveryDays:['deliverydays','leadtime','delivery'], approved:['approved','approvedvendor','status'], quality:['quality','qualityscore'], reliability:['reliability','reliabilityscore'], email:['email','contactemail'], website:['website','url'] }; setMapping(Object.fromEntries(Object.entries(aliases).map(([field,words])=>[field,hs.find(h=>words.some(word=>h.toLowerCase().replace(/[^a-z]/g,'').includes(word))) || ''])));
   }
   async function handleFile(file) {
     setFileError(''); setFileInfo(null); setHeaders([]); setRows([]); setSheetNames([]); setMapping({});
