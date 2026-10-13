@@ -1,0 +1,1 @@
+// Placeholder: Apply deterministic mandate rules for budgets, item caps, approved vendors, expiry, duplicates, and risk outcomes.
