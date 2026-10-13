@@ -1,0 +1,1 @@
+// Placeholder: Encapsulate PayPal sandbox order creation, authorization, capture, voiding, and status reconciliation.
