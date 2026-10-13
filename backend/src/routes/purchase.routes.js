@@ -30,7 +30,7 @@ function createPurchaseRoutes({ vendorService, auditService, purchaseStore }) {
       }
 
       const request = { ...requestBody, requestId };
-      auditService.recordEvent({
+      await auditService.recordEvent({
         eventType: 'PURCHASE_EVALUATION_REQUESTED',
         requestId,
         metadata: {
@@ -41,7 +41,7 @@ function createPurchaseRoutes({ vendorService, auditService, purchaseStore }) {
       });
 
       const offers = await vendorService.getOffersForRequest(request);
-      auditService.recordEvent({
+      await auditService.recordEvent({
         eventType: 'VENDOR_OFFERS_RETRIEVED',
         requestId,
         metadata: {
@@ -71,7 +71,7 @@ function createPurchaseRoutes({ vendorService, auditService, purchaseStore }) {
         : decision.status === 'NO_ELIGIBLE_OFFER'
           ? 'NO_ELIGIBLE_OFFER_FOUND'
           : 'POLICY_VALIDATION_FAILED';
-      auditService.recordEvent({
+      await auditService.recordEvent({
         eventType,
         requestId,
         metadata: {
@@ -89,7 +89,7 @@ function createPurchaseRoutes({ vendorService, auditService, purchaseStore }) {
         recommendedVendorId: decision.recommendation ? decision.recommendation.vendorId : null,
       };
 
-      const purchaseRecord = purchaseStore.create({
+      const purchaseRecord = await purchaseStore.create({
         purchaseId,
         requestId,
         request,
@@ -107,8 +107,8 @@ function createPurchaseRoutes({ vendorService, auditService, purchaseStore }) {
         auditEvents: [],
       });
 
-      const auditEvents = auditService.getEventsByRequestId(requestId);
-      const persistedPurchase = purchaseStore.upsert(purchaseId, (current) => ({
+      const auditEvents = await auditService.getEventsByRequestId(requestId);
+      const persistedPurchase = await purchaseStore.upsert(purchaseId, (current) => ({
         ...current,
         auditEvents,
       }));
@@ -134,9 +134,9 @@ function createPurchaseRoutes({ vendorService, auditService, purchaseStore }) {
     }
   });
 
-  router.get('/purchases/:purchaseId', (req, res, next) => {
+  router.get('/purchases/:purchaseId', async (req, res, next) => {
     try {
-      const purchase = purchaseStore.getById(req.params.purchaseId);
+      const purchase = await purchaseStore.getById(req.params.purchaseId);
       if (!purchase) {
         const notFound = new Error('Purchase record not found.');
         notFound.statusCode = 404;
