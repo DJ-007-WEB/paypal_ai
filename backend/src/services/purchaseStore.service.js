@@ -17,8 +17,15 @@ function createPurchaseStore({ collection } = {}) {
       const current = collection ? (await collection.findOne({ purchaseId })) : store.get(purchaseId);
       const next = updater(cloneValue(current || { purchaseId }));
       const entry = { ...cloneValue(next), purchaseId };
-      if (collection) await collection.replaceOne({ purchaseId }, entry, { upsert: true });
-      else store.set(purchaseId, cloneValue(entry));
+      // MongoDB _id is immutable. JSON cloning converts ObjectId to a string,
+      // so never pass a cloned _id back through replaceOne.
+      delete entry._id;
+      if (collection) {
+        await collection.updateOne({ purchaseId }, { $set: entry }, { upsert: true });
+        const saved = await collection.findOne({ purchaseId });
+        return cloneValue(saved);
+      }
+      store.set(purchaseId, cloneValue(entry));
       return cloneValue(entry);
     },
     async getById(purchaseId) {
