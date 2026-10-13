@@ -40,7 +40,7 @@ function createPurchaseRoutes({ vendorService, auditService, purchaseStore }) {
         },
       });
 
-      const offers = vendorService.getOffersForRequest(request);
+      const offers = await vendorService.getOffersForRequest(request);
       auditService.recordEvent({
         eventType: 'VENDOR_OFFERS_RETRIEVED',
         requestId,
