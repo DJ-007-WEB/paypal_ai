@@ -1,0 +1,1 @@
+// Placeholder: Process scheduled purchase jobs with safe state transitions, retries, and idempotent execution.
