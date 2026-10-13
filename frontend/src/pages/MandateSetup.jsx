@@ -1,0 +1,1 @@
+// Placeholder: Render the form for configuring a business mandate, spending limits, approved vendors, and expiry.
