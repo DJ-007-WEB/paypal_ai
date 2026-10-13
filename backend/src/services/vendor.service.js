@@ -39,7 +39,7 @@ function createVendorService(source = {}) {
       if (!Array.isArray(offers) || offers.length === 0) throw new Error('Provide at least one vendor offer.');
       if (testOffers) throw new Error('Vendor imports require MongoDB-backed storage.');
       const now = new Date().toISOString();
-      const normalized = offers.map((offer) => ({ ...offer, active: offer.active !== false, updatedAt: now, createdAt: offer.createdAt || now }));
+      const normalized = offers.map((offer) => ({ ...offer, active: offer.active !== false, updatedAt: now }));
       const ids = normalized.map((offer) => offer.offerId);
       if (new Set(ids).size !== ids.length) throw new Error('Each offerId must be unique within an import.');
       const result = await collection.bulkWrite(normalized.map((offer) => ({
