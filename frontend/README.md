@@ -1,0 +1,1 @@
+<!-- Placeholder: This directory will contain the React + Vite frontend. Add setup and development instructions here later. -->
