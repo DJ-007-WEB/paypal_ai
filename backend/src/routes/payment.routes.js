@@ -1,0 +1,1 @@
+// Placeholder: Define protected API routes for requesting payment actions and retrieving payment status.
