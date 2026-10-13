@@ -1,0 +1,1 @@
+// Placeholder: Enforce role-based and tenant-level access to mandates, purchases, approvals, invoices, and payments.
