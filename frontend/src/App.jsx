@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { evaluatePurchase, getHealth, getPurchaseById, getVendors } from './api/client.js';
+import { evaluatePurchase, getBusinessEmailStatus, getCurrentWorkspace, getGmailStatus, getHealth, getMyWorkspaces, getPurchaseById, getSession, getVendors, loginWithGoogle, logout as apiLogout, setSelectedTenantId } from './api/client.js';
 import { Button, EmptyState, InlineAlert, LoadingState, Logo, PageHeader, StatusBadge, ThemeControl, formatMoney, go } from './components/ui.jsx';
 import VendorImportWizard from './components/VendorImportWizard.jsx';
 
@@ -130,10 +130,18 @@ function LandingPage() {
   );
 }
 
-/* ================= Auth ================= */
+/* ================= Auth (wired to real Google sign-in; demo form retained for preview only) ================= */
 function AuthPage({ mode, onAuth }) {
   const [form, setForm] = useState({ fullName: '', email: '', password: '', confirm: '', businessName: '', terms: false });
-  const [error, setError] = useState('');
+  const [error, setError] = useState(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('error');
+      if (code === 'cancelled') return 'Google sign-in was cancelled. Try again when ready.';
+      if (code === 'auth_failed') return 'Google sign-in failed. Check configuration and try again.';
+      return '';
+    } catch { return ''; }
+  });
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const signup = mode === 'signup';
@@ -166,7 +174,11 @@ function AuthPage({ mode, onAuth }) {
           <span className="eyebrow">{signup ? 'Get started' : 'Welcome back'}</span>
           <h2>{signup ? 'Create your workspace' : 'Sign in to Mandate'}</h2>
           <p>{signup ? 'Set up your business workspace. You can add procurement settings and vendors next.' : 'Continue to your procurement workspace.'}</p>
-          <div className="demo-notice" role="note"><span aria-hidden="true">ⓘ</span><span><b>Prototype demo access</b><small>Authentication is not connected to a server yet. Do not use a real password — nothing is stored or verified server-side.</small></span></div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+            <Button onClick={loginWithGoogle}>Continue with Google <span aria-hidden="true">→</span></Button>
+            <small className="muted-note">Secure sign-in via Google. Business data stays isolated per workspace; sign-in alone never grants mailbox access.</small>
+          </div>
+          <div className="demo-notice" role="note"><span aria-hidden="true">ⓘ</span><span><b>Secure session required for business data</b><small>Google sign-in creates a server-validated session. The demo form below is preview-only and does not grant API access — protected calls return 401 when signed out.</small></span></div>
           <form onSubmit={submit} noValidate>
             {signup ? <label>Full name<input autoComplete="name" value={form.fullName} onChange={(e) => set('fullName', e.target.value)} placeholder="e.g. Alex Morgan" /></label> : null}
             <label>Work email<input type="email" autoComplete="email" value={form.email} onChange={(e) => set('email', e.target.value)} required placeholder="you@company.com" /></label>
@@ -549,8 +561,38 @@ function PurchaseDesk({ defaults }) {
   );
 }
 
+/* ============ Workspace security status (read-only display, no redesign) ============ */
+function WorkspaceSecurityStatus() {
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const [current, gmail] = await Promise.all([
+          getCurrentWorkspace().catch(() => null),
+          getGmailStatus().catch(() => null),
+        ]);
+        if (!alive) return;
+        setStatus({ current, gmail });
+      } catch { /* display-only; backend remains authoritative */ }
+    })();
+    return () => { alive = false; };
+  }, []);
+  if (!status?.current) return null;
+  const tenant = status.current.tenant;
+  const verified = tenant?.businessEmailVerifiedAt ? `verified ${new Date(tenant.businessEmailVerifiedAt).toLocaleDateString()}` : 'not verified';
+  const gmailLabel = !status.gmail ? '' : status.gmail.enabled === false ? 'Gmail connection: not configured' : status.gmail.connected ? `Gmail: connected (${status.gmail.mailboxEmail || 'mailbox'})` : 'Gmail: disconnected';
+  return (
+    <p className="muted-note" aria-live="polite">
+      Workspace: {tenant?.businessName || 'current'} · Business email {tenant?.businessEmail || 'not set'} ({verified})
+      {gmailLabel ? ` · ${gmailLabel}` : ''} · Role: {status.current.membership?.role || 'member'}
+    </p>
+  );
+}
+
 /* ================= Dashboard ================= */
-function Dashboard({ profile, onStartPurchase }) {
+function Dashboard({ profile, onStartPurchase, permissions }) {
+  const canImport = !permissions || permissions.includes('vendors:import');
   const [catalog, setCatalog] = useState(null);
   const [catalogError, setCatalogError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -586,6 +628,8 @@ function Dashboard({ profile, onStartPurchase }) {
         <section className="surface"><span className="step-kicker">Purchasing policies</span><h3>Defaults at a glance</h3><div className="compact-facts"><span>Default delivery<b>{profile?.deadline || '5'} days</b></span><span>Minimum quality<b>{profile?.quality || '70'}/100</b></span><span>Approved vendors<b>{profile?.approvedOnly ? 'Required' : 'Optional'}</b></span></div><small>Workspace preferences — request constraints are evaluated per purchase, not stored as server policy.</small><div style={{ marginTop: 10 }}><button className="inline-link" onClick={() => go('/app/policies')}>Review policy defaults →</button></div></section>
       </div>
       <div className="honest-banner" role="note"><span aria-hidden="true">ⓘ</span><p><b>Prototype data, clearly labeled.</b> Catalog counts come from the live API. Purchases and audit events are stored in memory and reset on restart. Approvals and payments are not implemented.</p></div>
+      <WorkspaceSecurityStatus />
+      {!canImport ? <p className="muted-note">Vendor import is disabled for your role. Contact a workspace owner for access — this button is hidden by permission, enforced by the server.</p> : null}
     </div>
   );
 }
@@ -774,6 +818,23 @@ function AuditPage() {
 /* ================= Settings ================= */
 function SettingsPage({ profile, theme, onThemeChange }) {
   const [notice, setNotice] = useState('');
+  const [verifyStatus, setVerifyStatus] = useState(null);
+  const [gmailStatus, setGmailStatus] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const current = await getCurrentWorkspace().catch(() => null);
+        if (!alive || !current?.tenant) return;
+        const business = await getBusinessEmailStatus(current.tenant.tenantId).catch(() => null);
+        const gmail = await getGmailStatus().catch(() => null);
+        if (!alive) return;
+        setVerifyStatus(business);
+        setGmailStatus(gmail);
+      } catch { /* read-only display */ }
+    })();
+    return () => { alive = false; };
+  }, []);
   const fields = [
     ['Business name', profile?.businessName], ['Legal name', profile?.legalName], ['Business email', profile?.email],
     ['Country', profile?.country], ['Primary currency', profile?.currency], ['Industry', profile?.industry],
@@ -789,6 +850,8 @@ function SettingsPage({ profile, theme, onThemeChange }) {
         <span className="step-kicker">Business identity · saved in this browser</span>
         <div className="settings-grid">{fields.map(([k, v]) => <div key={k}><span>{k}</span><b>{v || 'Not provided'}</b></div>)}</div>
         <div className="notice-box">There is no server-side business profile API yet. “Edit workspace setup” reopens local onboarding — it does not write to the server.</div>
+        {verifyStatus ? <p className="muted-note">Server verification: {verifyStatus.businessEmail || 'no business email'} · {verifyStatus.verifiedAt ? `verified ${new Date(verifyStatus.verifiedAt).toLocaleString()} (${verifyStatus.verificationMethod || 'verified'})` : 'not verified — a typed address never proves ownership'}.</p> : <p className="muted-note">Server verification: checking… (sign in with Google and select a workspace to see status).</p>}
+        {gmailStatus && gmailStatus.enabled !== false ? <p className="muted-note">Gmail mailbox: {gmailStatus.connected ? `connected (${gmailStatus.mailboxEmail || ''})` : 'disconnected'}. Sign-in never grants mailbox access; connection requires separate consent.</p> : <p className="muted-note">Gmail mailbox: not configured for this deployment.</p>}
         <div style={{ marginTop: 12, display: 'flex', gap: 12, flexWrap: 'wrap' }}><Button onClick={() => go('/app/onboarding')}>Edit workspace setup</Button></div>
       </section>
       <section className="surface">
@@ -899,13 +962,20 @@ function AppShell({ page, profile, user, onSignOut, theme, onThemeChange, childr
   );
 }
 
-/* ================= App ================= */
+/* ================= App (API-validated session; demo local kept for preview only) ================= */
 export default function App() {
   const [path, setPath] = useState(window.location.pathname);
-  const [user, setUser] = useState(() => { try { return JSON.parse(localStorage.getItem(SESSION) || 'null'); } catch { return null; } });
+  const [serverUser, setServerUser] = useState(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [sessionError, setSessionError] = useState('');
+  const [demoUser, setDemoUser] = useState(() => { try { return JSON.parse(localStorage.getItem(SESSION) || 'null'); } catch { return null; } });
+  const [workspaces, setWorkspaces] = useState([]);
+  const [permissions, setPermissions] = useState(null);
   const [profile, setProfile] = useState(() => readStore());
   const [theme, setTheme] = useState(() => { try { const t = localStorage.getItem(THEME_KEY); return ['light', 'dark', 'system'].includes(t) ? t : 'system'; } catch { return 'system'; } });
   const [apiOnline, setApiOnline] = useState(false);
+  const user = serverUser || demoUser;
+  const isServerSession = Boolean(serverUser);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -925,6 +995,52 @@ export default function App() {
     getHealth().then(() => setApiOnline(true)).catch(() => setApiOnline(false));
   }, [path]);
 
+  // API-validated session replaces local-storage authority for server data.
+  useEffect(() => {
+    let alive = true;
+    setSessionLoading(true);
+    (async () => {
+      try {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          if (params.get('auth') === 'success') {
+            const clean = window.location.pathname;
+            window.history.replaceState({}, '', clean);
+            setPath(clean);
+          }
+        } catch { /* ignore */ }
+        const session = await getSession();
+        if (!alive) return;
+        if (session?.authenticated && session.user) {
+          setServerUser({
+            fullName: session.user.displayName || session.user.email.split('@')[0],
+            email: session.user.email,
+            userId: session.user.userId,
+          });
+          setSessionError('');
+          try {
+            const mine = await getMyWorkspaces().catch(() => null);
+            const list = mine?.memberships || [];
+            if (alive) setWorkspaces(list);
+            if (list.length > 0) {
+              const currentSelected = (() => { try { return localStorage.getItem('mandate.selected.tenant.v1') || ''; } catch { return ''; } })();
+              if (!currentSelected) setSelectedTenantId(list[0].tenantId);
+            }
+            const current = await getCurrentWorkspace().catch(() => null);
+            if (alive && current) setPermissions(current.permissions || current.membership?.permissions || null);
+          } catch { /* workspace display-only */ }
+        } else {
+          setServerUser(null);
+        }
+      } catch (e) {
+        if (alive) setSessionError(e.message || 'Session check failed.');
+      } finally {
+        if (alive) setSessionLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [path]);
+
   useEffect(() => {
     const onPop = () => setPath(window.location.pathname);
     const onNavigate = (e) => { const next = e.detail || '/'; window.history.pushState({}, '', next); setPath(next); window.scrollTo(0, 0); };
@@ -934,14 +1050,24 @@ export default function App() {
   }, []);
 
   function authenticate(nextUser) {
+    // Demo preview only — does not grant server access. Server data requires Google sign-in.
     localStorage.setItem(SESSION, JSON.stringify(nextUser));
-    setUser(nextUser);
+    setDemoUser(nextUser);
     const saved = readStore();
     if (saved) { const merged = { ...saved, fullName: nextUser.fullName, email: nextUser.email }; setProfile(merged); go('/app/dashboard'); }
     else { setProfile(null); go('/app/onboarding'); }
   }
   function complete(profileData) { setProfile(profileData); saveStore(profileData); go('/app/dashboard'); }
-  function signOut() { localStorage.removeItem(SESSION); setUser(null); go('/'); }
+  async function signOut() {
+    try { await apiLogout(); } catch { /* session may already be expired */ }
+    try { localStorage.removeItem(SESSION); } catch { /* ignore */ }
+    setDemoUser(null);
+    setServerUser(null);
+    setWorkspaces([]);
+    setPermissions(null);
+    setSelectedTenantId('');
+    go('/');
+  }
   function handleImported(result) {
     setProfile((prev) => {
       if (!prev) return prev;
@@ -954,6 +1080,18 @@ export default function App() {
   if (path === '/login' || path === '/signup') return <AuthPage key={path} mode={path === '/signup' ? 'signup' : 'login'} onAuth={authenticate} />;
   if (path === '/forgot-password') return <ForgotPassword />;
   if (path === '/') return <LandingPage />;
+  if (sessionLoading) {
+    return (
+      <div className="auth-page">
+        <main className="simple-message" aria-live="polite">
+          <span className="eyebrow">Checking session</span>
+          <h2>Validating your session…</h2>
+          <p className="muted-note">Sessions are validated server-side. Local preview data never grants API access.</p>
+          <LoadingState rows={2} label="Checking session…" />
+        </main>
+      </div>
+    );
+  }
   if (!user) return <LandingPage />;
   if (path === '/app/onboarding') return <Onboarding key={profile?.onboardingComplete ? 'edit' : 'new'} user={user} onComplete={complete} />;
 
@@ -967,9 +1105,45 @@ export default function App() {
                 : path === '/app/audit' ? 'audit'
                   : path === '/app/settings/business' || path === '/app/settings/team' ? 'business' : 'dashboard';
 
+  const sessionBanner = !isServerSession ? (
+    <div className="wrap" style={{ paddingTop: 12 }}>
+      <div className="notice-box" role="note">
+        {sessionError ? `Signed out — ${sessionError} ` : 'Demo preview — server data requires Google sign-in. '}
+        <button className="inline-link" onClick={() => go('/login')}>Sign in with Google →</button>
+        {workspaces.length > 1 ? (
+          <span style={{ marginLeft: 12 }}>
+            Workspace:{' '}
+            <select
+              aria-label="Select workspace"
+              value={(() => { try { return localStorage.getItem('mandate.selected.tenant.v1') || ''; } catch { return ''; } })()}
+              onChange={(e) => { setSelectedTenantId(e.target.value); window.location.reload(); }}
+            >
+              {workspaces.map((w) => <option key={w.tenantId} value={w.tenantId}>{w.businessName || w.tenantId} ({w.role})</option>)}
+            </select>
+          </span>
+        ) : null}
+      </div>
+    </div>
+  ) : (workspaces.length > 1 ? (
+    <div className="wrap" style={{ paddingTop: 12 }}>
+      <p className="muted-note">
+        Workspace:{' '}
+        <select
+          aria-label="Select workspace"
+          value={(() => { try { return localStorage.getItem('mandate.selected.tenant.v1') || ''; } catch { return ''; } })()}
+          onChange={(e) => { setSelectedTenantId(e.target.value); window.location.reload(); }}
+        >
+          {workspaces.map((w) => <option key={w.tenantId} value={w.tenantId}>{w.businessName || w.tenantId} ({w.role})</option>)}
+        </select>
+      </p>
+    </div>
+  ) : null);
+
   return (
-    <AppShell page={page} profile={profile} user={user} onSignOut={signOut} theme={theme} onThemeChange={setTheme} apiOnline={apiOnline}>
-      {page === 'dashboard' ? <Dashboard profile={profile} onStartPurchase={() => go('/app/purchases/new')} />
+    <>
+      {sessionBanner}
+      <AppShell page={page} profile={profile} user={user} onSignOut={signOut} theme={theme} onThemeChange={setTheme} apiOnline={apiOnline}>
+      {page === 'dashboard' ? <Dashboard profile={profile} permissions={permissions} onStartPurchase={() => go('/app/purchases/new')} />
         : page === 'purchase' ? <PurchaseDesk defaults={profile} />
           : page === 'vendors' ? <CatalogPage />
             : page === 'import' ? <ImportPage onImported={handleImported} />
@@ -978,6 +1152,7 @@ export default function App() {
                   : page === 'audit' ? <AuditPage />
                     : page === 'approvals' ? <ApprovalsPage />
                       : <SettingsPage profile={profile} theme={theme} onThemeChange={setTheme} />}
-    </AppShell>
+      </AppShell>
+    </>
   );
 }

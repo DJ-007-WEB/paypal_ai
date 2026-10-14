@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createApp } = require('../src/app');
+const { loadConfig } = require('../src/config');
 const { createVendorService } = require('../src/services/vendor.service');
 const { createAuditService } = require('../src/services/audit.service');
 const { createPurchaseStore } = require('../src/services/purchaseStore.service');
@@ -96,29 +97,71 @@ const defaultOffers = [
   },
 ];
 
+function testConfig() {
+  return loadConfig({
+    NODE_ENV: 'test',
+    PORT: '3000',
+    FRONTEND_ORIGIN: 'http://localhost:5173',
+    APP_BASE_URL: 'http://localhost:3000',
+    FRONTEND_BASE_URL: 'http://localhost:5173',
+    SESSION_COOKIE_SECURE: 'false',
+    GOOGLE_OIDC_ENABLED: 'false',
+    GOOGLE_GMAIL_ENABLED: 'false',
+    LOG_LEVEL: 'error',
+  });
+}
+
 async function startServer(customOffers = defaultOffers) {
+  const config = testConfig();
   const app = createApp({
+    config,
     vendorService: createVendorService(customOffers),
     auditService: createAuditService(),
     purchaseStore: createPurchaseStore(),
+    allowTestPrincipal: true,
   });
+  const { userService, tenantService } = app.__services;
+  const user = await userService.__seed({
+    googleSubject: `test-sub-${Math.random().toString(36).slice(2)}`,
+    email: 'owner@example.com',
+    emailVerified: true,
+    displayName: 'Test Owner',
+    status: 'active',
+  });
+  const tenant = await tenantService.__seedTenant({
+    businessName: 'Test Business',
+    status: 'active',
+    businessEmail: '',
+    businessEmailVerifiedAt: null,
+  });
+  await tenantService.__seedMembership({
+    tenantId: tenant.tenantId,
+    userId: user.userId,
+    role: 'owner',
+    permissions: tenantService.permissionsForRole('owner'),
+    status: 'active',
+  });
+
+  const authHeaders = {
+    'X-Test-User-Id': user.userId,
+    'X-Test-Tenant-Id': tenant.tenantId,
+  };
 
   return new Promise((resolve, reject) => {
     const server = app.listen(0, () => {
       const { port } = server.address();
-      resolve({
-        baseUrl: `http://127.0.0.1:${port}`,
-        server,
-      });
+      resolve({ baseUrl: `http://127.0.0.1:${port}`, server, authHeaders, user, tenant, app });
     });
     server.on('error', reject);
   });
 }
 
-async function apiRequest(baseUrl, method, path, body) {
+async function apiRequest(baseUrl, method, path, body, extraHeaders = {}) {
+  const headers = { ...extraHeaders };
+  if (body) headers['Content-Type'] = 'application/json';
   const response = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
 
@@ -145,10 +188,21 @@ test('health endpoint returns expected response', async () => {
   }
 });
 
-test('valid purchase evaluation returns a recommendation when eligible offers exist', async () => {
+test('protected routes reject unauthenticated calls', async () => {
   const { baseUrl, server } = await startServer();
   try {
     const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest());
+    assert.equal(res.status, 401);
+    assert.equal(res.body.success, false);
+  } finally {
+    server.close();
+  }
+});
+
+test('valid purchase evaluation returns a recommendation when eligible offers exist', async () => {
+  const { baseUrl, server, authHeaders } = await startServer();
+  try {
+    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest(), authHeaders);
     assert.equal(res.status, 200);
     assert.equal(res.body.success, true);
     assert.equal(res.body.data.decision.status, 'RECOMMENDED');
@@ -161,9 +215,9 @@ test('valid purchase evaluation returns a recommendation when eligible offers ex
 });
 
 test('malformed request returns HTTP 400', async () => {
-  const { baseUrl, server } = await startServer();
+  const { baseUrl, server, authHeaders } = await startServer();
   try {
-    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', { quantity: 'lots' });
+    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', { quantity: 'lots' }, authHeaders);
     assert.equal(res.status, 400);
     assert.equal(res.body.success, false);
     assert.equal(res.body.error.code, 'VALIDATION_ERROR');
@@ -174,9 +228,9 @@ test('malformed request returns HTTP 400', async () => {
 });
 
 test('unsupported currency is rejected', async () => {
-  const { baseUrl, server } = await startServer();
+  const { baseUrl, server, authHeaders } = await startServer();
   try {
-    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ currency: 'XYZ' }));
+    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ currency: 'XYZ' }), authHeaders);
     assert.equal(res.status, 400);
     assert.equal(res.body.error.code, 'VALIDATION_ERROR');
     assert.match(JSON.stringify(res.body), /currency/i);
@@ -186,11 +240,11 @@ test('unsupported currency is rejected', async () => {
 });
 
 test('no eligible offer returns NO_ELIGIBLE_OFFER', async () => {
-  const { baseUrl, server } = await startServer([
+  const { baseUrl, server, authHeaders } = await startServer([
     { ...defaultOffers[3], vendorApproved: false },
   ]);
   try {
-    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest());
+    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest(), authHeaders);
     assert.equal(res.status, 200);
     assert.equal(res.body.data.decision.status, 'NO_ELIGIBLE_OFFER');
     assert.equal(res.body.data.policy.passed, false);
@@ -200,11 +254,11 @@ test('no eligible offer returns NO_ELIGIBLE_OFFER', async () => {
 });
 
 test('over-budget offers are not recommended', async () => {
-  const { baseUrl, server } = await startServer([
+  const { baseUrl, server, authHeaders } = await startServer([
     { ...defaultOffers[4], unitPriceMinor: 60000, availableQuantity: 500 },
   ]);
   try {
-    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ maxTotalMinor: 4000000 }));
+    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ maxTotalMinor: 4000000 }), authHeaders);
     assert.equal(res.status, 200);
     assert.equal(res.body.data.decision.status, 'NO_ELIGIBLE_OFFER');
   } finally {
@@ -213,12 +267,12 @@ test('over-budget offers are not recommended', async () => {
 });
 
 test('unapproved vendors are excluded when approval is required', async () => {
-  const { baseUrl, server } = await startServer([
+  const { baseUrl, server, authHeaders } = await startServer([
     { ...defaultOffers[0], vendorApproved: true },
     { ...defaultOffers[3], vendorApproved: false },
   ]);
   try {
-    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ requireApprovedVendor: true }));
+    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ requireApprovedVendor: true }), authHeaders);
     assert.equal(res.status, 200);
     assert.equal(res.body.data.decision.recommendedVendorId, 'vendor-low');
   } finally {
@@ -227,11 +281,11 @@ test('unapproved vendors are excluded when approval is required', async () => {
 });
 
 test('insufficient inventory prevents recommendation', async () => {
-  const { baseUrl, server } = await startServer([
+  const { baseUrl, server, authHeaders } = await startServer([
     { ...defaultOffers[2], availableQuantity: 10 },
   ]);
   try {
-    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest());
+    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest(), authHeaders);
     assert.equal(res.status, 200);
     assert.equal(res.body.data.decision.status, 'NO_ELIGIBLE_OFFER');
   } finally {
@@ -240,7 +294,7 @@ test('insufficient inventory prevents recommendation', async () => {
 });
 
 test('policy violations prevent an acceptable recommendation from being returned', async () => {
-  const { baseUrl, server } = await startServer([
+  const { baseUrl, server, authHeaders } = await startServer([
     {
       ...defaultOffers[0],
       qualityScore: 40,
@@ -248,7 +302,7 @@ test('policy violations prevent an acceptable recommendation from being returned
     },
   ]);
   try {
-    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ minQualityScore: 80, minReliabilityScore: 80 }));
+    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ minQualityScore: 80, minReliabilityScore: 80 }), authHeaders);
     assert.equal(res.status, 200);
     assert.equal(res.body.data.policy.passed, false);
     assert.notEqual(res.body.data.decision.status, 'RECOMMENDED');
@@ -258,11 +312,11 @@ test('policy violations prevent an acceptable recommendation from being returned
 });
 
 test('purchase evaluation is retrievable by purchase ID', async () => {
-  const { baseUrl, server } = await startServer();
+  const { baseUrl, server, authHeaders } = await startServer();
   try {
-    const evaluation = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ requestId: 'req-123' }));
+    const evaluation = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ requestId: 'req-123' }), authHeaders);
     const purchaseId = evaluation.body.data.purchaseId;
-    const retrieval = await apiRequest(baseUrl, 'GET', `/api/purchases/${purchaseId}`);
+    const retrieval = await apiRequest(baseUrl, 'GET', `/api/purchases/${purchaseId}`, null, authHeaders);
     assert.equal(retrieval.status, 200);
     assert.equal(retrieval.body.success, true);
     assert.equal(retrieval.body.data.purchaseId, purchaseId);
@@ -272,9 +326,9 @@ test('purchase evaluation is retrievable by purchase ID', async () => {
 });
 
 test('unknown purchase ID returns HTTP 404', async () => {
-  const { baseUrl, server } = await startServer();
+  const { baseUrl, server, authHeaders } = await startServer();
   try {
-    const res = await apiRequest(baseUrl, 'GET', '/api/purchases/unknown-purchase');
+    const res = await apiRequest(baseUrl, 'GET', '/api/purchases/unknown-purchase', null, authHeaders);
     assert.equal(res.status, 404);
     assert.equal(res.body.success, false);
   } finally {
@@ -283,11 +337,11 @@ test('unknown purchase ID returns HTTP 404', async () => {
 });
 
 test('evaluation creates audit events', async () => {
-  const { baseUrl, server } = await startServer();
+  const { baseUrl, server, authHeaders } = await startServer();
   try {
-    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ requestId: 'audit-req' }));
+    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ requestId: 'audit-req' }), authHeaders);
     assert.equal(res.status, 200);
-    const events = await apiRequest(baseUrl, 'GET', `/api/purchases/${res.body.data.purchaseId}`);
+    const events = await apiRequest(baseUrl, 'GET', `/api/purchases/${res.body.data.purchaseId}`, null, authHeaders);
     assert.equal(events.body.data.auditEvents.length > 0, true);
   } finally {
     server.close();
@@ -295,9 +349,9 @@ test('evaluation creates audit events', async () => {
 });
 
 test('error responses do not expose stack traces', async () => {
-  const { baseUrl, server } = await startServer();
+  const { baseUrl, server, authHeaders } = await startServer();
   try {
-    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', { productId: 'BRG-6204', quantity: 0, maxTotalMinor: 1000, currency: 'USD', maxDeliveryDays: 5, requireApprovedVendor: true });
+    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', { productId: 'BRG-6204', quantity: 0, maxTotalMinor: 1000, currency: 'USD', maxDeliveryDays: 5, requireApprovedVendor: true }, authHeaders);
     assert.equal(res.status, 400);
     assert.equal(res.body.error.message.includes('stack'), false);
     assert.equal(`${res.body}`.includes('TypeError'), false);
@@ -307,22 +361,23 @@ test('error responses do not expose stack traces', async () => {
 });
 
 test('request IDs are present in responses', async () => {
-  const { baseUrl, server } = await startServer();
+  const { baseUrl, server, authHeaders } = await startServer();
   try {
-    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ requestId: 'fixed-id' }));
+    // Server-authoritative request ID is returned; client correlation is validated separately.
+    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest(), authHeaders);
     assert.equal(res.status, 200);
-    assert.equal(res.body.meta.requestId, 'fixed-id');
-    assert.equal(res.headers.get('x-request-id'), 'fixed-id');
+    assert.ok(res.body.meta.requestId);
+    assert.ok(res.headers.get('x-request-id'));
   } finally {
     server.close();
   }
 });
 
 test('repeated evaluation with identical input and offers produces deterministic decisions', async () => {
-  const { baseUrl, server } = await startServer();
+  const { baseUrl, server, authHeaders } = await startServer();
   try {
-    const first = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ requestId: 'repeated-1' }));
-    const second = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ requestId: 'repeated-2' }));
+    const first = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ requestId: 'repeated-1' }), authHeaders);
+    const second = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest({ requestId: 'repeated-2' }), authHeaders);
     assert.deepEqual(first.body.data.decision, second.body.data.decision);
     assert.deepEqual(first.body.data.policy, second.body.data.policy);
   } finally {
@@ -331,9 +386,9 @@ test('repeated evaluation with identical input and offers produces deterministic
 });
 
 test('system never claims payment has been authorized', async () => {
-  const { baseUrl, server } = await startServer();
+  const { baseUrl, server, authHeaders } = await startServer();
   try {
-    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest());
+    const res = await apiRequest(baseUrl, 'POST', '/api/purchases/evaluate', makeRequest(), authHeaders);
     assert.equal(res.body.data.authorization.paymentAuthorized, false);
     assert.equal(res.body.data.policy.paymentAuthorized, false);
   } finally {
