@@ -223,6 +223,10 @@ function createApp(options = {}) {
   }
   app.use('/api', requireAuthentication, resolveWorkspaceMembership, purchasePermissionGate, csrfProtection, purchaseRouter);
 
+  // --- Payment routes (auth + tenant) ---
+  const paymentRouter = createPaymentRoutes({ purchaseStore, auditService });
+  app.use('/api', requireAuthentication, resolveWorkspaceMembership, csrfProtection, paymentRouter);
+
   // --- Audit read (auth + tenant + permission) ---
   app.get('/api/audit/events', requireAuthentication, resolveWorkspaceMembership, requirePermission('audit:read'), async (req, res, next) => {
     try {
@@ -230,11 +234,6 @@ function createApp(options = {}) {
       return res.json({ success: true, data: events.slice(0, 200), meta: { count: Math.min(events.length, 200) } });
     } catch (err) { next(err); }
   });
-
-  // --- Approval / payment / mandate stubs: explicitly non-executing ---
-  app.use('/api', createApprovalRoutes());
-  app.use('/api', createPaymentRoutes());
-  app.use('/api', createMandateRoutes());
 
   // --- 404 ---
   app.use((req, res, next) => {

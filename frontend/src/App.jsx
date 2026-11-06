@@ -1369,18 +1369,8 @@ function SettingsPage({ profile, theme, onThemeChange }) {
   );
 }
 
-function ApprovalsPage() {
-  return (
-    <div className="page-stack">
-      <PageHeader eyebrow="Human review" title="Approvals" description="Approval actions are intentionally unavailable until the backend workflow is implemented." actions={<span className="locked-chip">Locked</span>} />
-      <section className="surface empty-feature">
-        <span className="large-lock" aria-hidden="true">⌑</span>
-        <h2>No approval workflow connected</h2>
-        <p className="muted-note">Purchase recommendations can be evaluated, but approval endpoints return 501. This page will not mark a purchase as approved or authorize payment.</p>
-        <Button variant="secondary" onClick={() => go('/app/purchases/new')}>Evaluate a purchase</Button>
-      </section>
-    </div>
-  );
+function ApprovalsPage({ profile, onNavigate }) {
+  return <Approvals defaultProfile={profile} onNavigate={onNavigate} />;
 }
 
 /* ================= Shell ================= */
@@ -1403,6 +1393,7 @@ function AppShell({ page, profile, user, onSignOut, theme, onThemeChange, childr
       label: 'Govern', items: [
         ['policies', 'Policy controls', '☷', '/app/policies'],
         ['audit', 'Audit trail', '≋', '/app/audit'],
+        ['approvals', 'Approvals', '✎', '/app/approvals'],
         ['business', 'Workspace settings', '⚙', '/app/settings/business'],
       ],
     },
