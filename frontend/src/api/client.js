@@ -118,6 +118,19 @@ export async function getBusinessEmailStatus(tenantId) {
   return apiFetch(`/workspaces/${id}/business-email`);
 }
 
+export async function listWorkspaceMembers(tenantId) {
+  const id = encodeURIComponent(String(tenantId || getSelectedTenantId() || '').trim());
+  if (!id) throw new Error('Select a workspace first.');
+  const data = await apiFetch(`/workspaces/${id}/members`);
+  return Array.isArray(data?.members) ? data.members : [];
+}
+
+export async function updateWorkspace(tenantId, patch) {
+  const id = encodeURIComponent(String(tenantId || '').trim());
+  if (!id) throw new Error('Select a workspace first.');
+  return apiFetch(`/workspaces/${id}`, { method: 'PATCH', body: patch });
+}
+
 export async function getGmailStatus() {
   return apiFetch('/integrations/google-gmail/status');
 }
@@ -155,6 +168,11 @@ export async function getPurchaseById(purchaseId) {
 export async function listPurchases(status) {
   const q = status ? `?status=${encodeURIComponent(status)}` : '';
   return apiFetch(`/purchases${q}`);
+}
+
+export async function listAuditEvents() {
+  const data = await apiFetch('/audit/events');
+  return Array.isArray(data) ? data : [];
 }
 
 export async function getHealth() {

@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { evaluatePurchase, getBusinessEmailStatus, getCurrentWorkspace, getGmailStatus, getHealth, getMyWorkspaces, getPurchaseById, getSession, getVendors, loginWithGoogle, logout as apiLogout, setSelectedTenantId } from './api/client.js';
+import { evaluatePurchase, getBusinessEmailStatus, getCurrentWorkspace, getGmailStatus, getHealth, getMyWorkspaces, getPurchaseById, getSession, getVendors, listAuditEvents, listPurchases, listWorkspaceMembers, loginWithGoogle, logout as apiLogout, setSelectedTenantId, updateWorkspace } from './api/client.js';
 import { Button, EmptyState, InlineAlert, LoadingState, Logo, PageHeader, StatusBadge, ThemeControl, formatMoney, go } from './components/ui.jsx';
 import VendorImportWizard from './components/VendorImportWizard.jsx';
 
 const STORE = 'mandate.demo.workspace.v1';
-const SESSION = 'mandate.demo.session.v1';
 const THEME_KEY = 'mandate.theme';
 
 const initialPurchase = {
@@ -130,10 +129,9 @@ function LandingPage() {
   );
 }
 
-/* ================= Auth (wired to real Google sign-in; demo form retained for preview only) ================= */
-function AuthPage({ mode, onAuth }) {
-  const [form, setForm] = useState({ fullName: '', email: '', password: '', confirm: '', businessName: '', terms: false });
-  const [error, setError] = useState(() => {
+/* ================= Auth (Google sign-in only; no local/demo credentials) ================= */
+function AuthPage({ mode }) {
+  const [error] = useState(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       const code = params.get('error');
@@ -142,23 +140,7 @@ function AuthPage({ mode, onAuth }) {
       return '';
     } catch { return ''; }
   });
-  const [showPassword, setShowPassword] = useState(false);
-  const [busy, setBusy] = useState(false);
   const signup = mode === 'signup';
-  const set = (key, value) => setForm((s) => ({ ...s, [key]: value }));
-  function submit(e) {
-    e.preventDefault(); setError('');
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) return setError('Enter a valid work email address.');
-    if (form.password.length < 8) return setError('Use a password with at least 8 characters.');
-    if (signup && form.password !== form.confirm) return setError('Your passwords do not match.');
-    if (signup && !form.businessName.trim()) return setError('Enter your business name to continue.');
-    if (signup && !form.terms) return setError('Please acknowledge the prototype terms notice.');
-    setBusy(true);
-    window.setTimeout(() => {
-      onAuth({ fullName: form.fullName.trim() || form.email.split('@')[0], email: form.email.trim(), businessName: form.businessName.trim() });
-      setBusy(false);
-    }, 250);
-  }
   return (
     <div className="auth-page">
       <header className="auth-top"><Logo /><button className="text-button" onClick={() => go('/')}>← Back to Mandate</button></header>
@@ -173,30 +155,15 @@ function AuthPage({ mode, onAuth }) {
         <section className="auth-card" aria-label={signup ? 'Create workspace' : 'Sign in'}>
           <span className="eyebrow">{signup ? 'Get started' : 'Welcome back'}</span>
           <h2>{signup ? 'Create your workspace' : 'Sign in to Mandate'}</h2>
-          <p>{signup ? 'Set up your business workspace. You can add procurement settings and vendors next.' : 'Continue to your procurement workspace.'}</p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+          <p>{signup ? 'Use your Google identity to start a server-validated session. You can set up business details after signing in.' : 'Continue to your procurement workspace.'}</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, margin: '18px 0' }}>
             <Button onClick={loginWithGoogle}>Continue with Google <span aria-hidden="true">→</span></Button>
             <small className="muted-note">Secure sign-in via Google. Business data stays isolated per workspace; sign-in alone never grants mailbox access.</small>
           </div>
-          <div className="demo-notice" role="note"><span aria-hidden="true">ⓘ</span><span><b>Secure session required for business data</b><small>Google sign-in creates a server-validated session. The demo form below is preview-only and does not grant API access — protected calls return 401 when signed out.</small></span></div>
-          <form onSubmit={submit} noValidate>
-            {signup ? <label>Full name<input autoComplete="name" value={form.fullName} onChange={(e) => set('fullName', e.target.value)} placeholder="e.g. Alex Morgan" /></label> : null}
-            <label>Work email<input type="email" autoComplete="email" value={form.email} onChange={(e) => set('email', e.target.value)} required placeholder="you@company.com" /></label>
-            {signup ? <label>Business name<input value={form.businessName} onChange={(e) => set('businessName', e.target.value)} required placeholder="Your company" /></label> : null}
-            <label>Password
-              <div className="password-wrap">
-                <input type={showPassword ? 'text' : 'password'} autoComplete={signup ? 'new-password' : 'current-password'} value={form.password} onChange={(e) => set('password', e.target.value)} minLength={8} required placeholder="At least 8 characters" />
-                <button type="button" onClick={() => setShowPassword((v) => !v)} aria-pressed={showPassword}>{showPassword ? 'Hide' : 'Show'}</button>
-              </div>
-            </label>
-            {signup ? <label>Confirm password<input type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={form.confirm} onChange={(e) => set('confirm', e.target.value)} required placeholder="Enter password again" /></label> : null}
-            {signup ? <label className="terms-check"><input type="checkbox" checked={form.terms} onChange={(e) => set('terms', e.target.checked)} /><span>I understand this is a demo and no secure account is being created.</span></label> : null}
-            {!signup ? <div className="auth-inline"><span>Use a demo identity to continue</span><button type="button" onClick={() => go('/forgot-password')}>Forgot password?</button></div> : null}
-            {error ? <div className="form-error" role="alert">{error}</div> : null}
-            <Button type="submit" disabled={busy}>{busy ? 'Opening workspace…' : signup ? 'Continue to setup' : 'Continue to workspace'} <span aria-hidden="true">→</span></Button>
-          </form>
-          <div className="auth-switch">{signup ? 'Already have a workspace?' : 'New to Mandate?'} <button onClick={() => go(signup ? '/login' : '/signup')}>{signup ? 'Log in' : 'Create an account'}</button></div>
-          <small className="auth-legal">Prototype only — passwords are not stored or sent to a server.</small>
+          <div className="demo-notice" role="note"><span aria-hidden="true">ⓘ</span><span><b>Google sign-in only</b><small>Mandate has no email/password accounts. The server verifies your Google identity before creating a session, and protected API calls return 401 when signed out.</small></span></div>
+          {error ? <div className="form-error" role="alert" style={{ marginTop: 14 }}>{error}</div> : null}
+          <div className="auth-switch">{signup ? 'Already have a workspace?' : 'New to Mandate?'} <button onClick={() => go(signup ? '/login' : '/signup')}>{signup ? 'Log in' : 'Create a workspace'}</button></div>
+          <small className="auth-legal">Mandate never sees your Google password. No demo credentials are accepted.</small>
         </section>
       </main>
     </div>
@@ -209,8 +176,8 @@ function ForgotPassword() {
       <header className="auth-top"><Logo /><button className="text-button" onClick={() => go('/login')}>← Back to login</button></header>
       <section className="simple-message">
         <span className="eyebrow">Account access</span>
-        <h2>Password reset isn’t connected yet.</h2>
-        <p>This prototype has no authentication server or email delivery. Return to login to continue using demo access. Do not expect a reset email — none will be sent.</p>
+        <h2>There is no Mandate password to reset.</h2>
+        <p>Sign-in is handled by Google, so Mandate does not store or reset passwords. If you cannot access your Google account, recover it with Google first, then return here.</p>
         <Button onClick={() => go('/login')}>Return to login</Button>
       </section>
     </div>
@@ -265,7 +232,7 @@ function Onboarding({ user, onComplete }) {
   }
   return (
     <div className="onboarding-page">
-      <header className="onboarding-top"><Logo /><div style={{ display: 'flex', gap: 16, alignItems: 'center' }}><span className="demo-chip">Demo workspace</span><button className="text-button" onClick={() => go('/app/dashboard')}>Exit setup</button></div></header>
+      <header className="onboarding-top"><Logo /><div style={{ display: 'flex', gap: 16, alignItems: 'center' }}><span className="demo-chip">Local setup</span><button className="text-button" onClick={() => go('/app/dashboard')}>Exit setup</button></div></header>
       <main className="onboarding-main">
         <div className="onboarding-heading"><span className="eyebrow">Workspace setup</span><h1>Let’s set up your business.</h1><p>Configure the basics now. You can refine these preferences later.</p></div>
         <div className="wizard">
@@ -276,7 +243,7 @@ function Onboarding({ user, onComplete }) {
                 <span>{i < step ? '✓' : String(i + 1).padStart(2, '0')}</span><b>{s}</b>
               </button>
             ))}
-            <div className="wizard-aside-note"><b>Good to know</b><p>Business details below are saved in this browser for demo use. Vendor offers are saved to the server only when the import API reports success.</p></div>
+            <div className="wizard-aside-note"><b>Good to know</b><p>Business details below are saved in this browser only. Vendor offers are saved to the server only when the import API reports success.</p></div>
           </aside>
           <section className="wizard-panel">
             <div className="wizard-panel-head"><span className="eyebrow">Step {String(step + 1).padStart(2, '0')} of 05</span><h2>{steps[step]}</h2><p>{stepHelp[step]}</p></div>
@@ -323,7 +290,7 @@ function Onboarding({ user, onComplete }) {
                 <label>Approval contact work email <small className="field-hint">Optional — no email will be sent</small><input type="email" value={business.managerEmail} onChange={(e) => set('managerEmail', e.target.value)} placeholder="manager@company.com" /></label>
                 <label className="setting-toggle"><span><b>All purchases should be reviewed</b><small>Record your preference for human review before purchasing.</small></span><input type="checkbox" checked={business.allReview} onChange={(e) => set('allReview', e.target.checked)} /></label>
                 <label className="setting-toggle"><span><b>Budget-based approval thresholds</b><small>You intend to define thresholds in a future approval workflow.</small></span><input type="checkbox" checked={business.thresholds} onChange={(e) => set('thresholds', e.target.checked)} /></label>
-                <div className="notice-box">Approval preferences are recorded for this demo only. Approval endpoints return 501 and no approval emails are sent. A preference is not a permission.</div>
+                <div className="notice-box">Approval preferences are recorded locally only. Approval endpoints return 501 and no approval emails are sent. A preference is not a permission.</div>
               </div>
             ) : null}
             <div style={{ display: step === 3 ? 'block' : 'none' }}>
@@ -345,7 +312,7 @@ function Onboarding({ user, onComplete }) {
               <div className="review-list">
                 <div className="review-item"><span>Business profile</span><div><b>{business.businessName || 'Not provided'}</b><small>{business.industry || 'Industry not selected'} · {business.country} · {business.currency}</small><small>→ Saved in this browser (localStorage).</small></div><button onClick={() => setStep(0)}>Edit</button></div>
                 <div className="review-item"><span>Procurement defaults</span><div><b>{business.currency} {business.defaultBudget || 'No budget set'}</b><small>Delivery ≤ {business.deadline} days · Quality {business.quality}/100 · Reliability {business.reliability}/100</small><small>→ Workspace preference only; not server-enforced policy.</small></div><button onClick={() => setStep(1)}>Edit</button></div>
-                <div className="review-item"><span>Review preferences</span><div><b>{business.allReview ? 'Human review preferred' : 'Review preference not required'}</b><small>{business.managerName || 'No approver added'} · Demo preference only.</small><small>→ Not persisted to any approval service.</small></div><button onClick={() => setStep(2)}>Edit</button></div>
+                <div className="review-item"><span>Review preferences</span><div><b>{business.allReview ? 'Human review preferred' : 'Review preference not required'}</b><small>{business.managerName || 'No approver added'} · Local preference only.</small><small>→ Not persisted to any approval service.</small></div><button onClick={() => setStep(2)}>Edit</button></div>
                 <div className="review-item"><span>Vendor spreadsheet</span><div><b>{importState?.fileName || 'Skipped for now'}</b><small>{importResult ? `${importResult.received ?? importResult.inserted ?? ''} offers persisted by the server (backend confirmation).` : importState?.fileName ? 'Previewed but not imported yet.' : 'You can import suppliers later.'}</small><small>→ {importResult ? 'Persisted by the server.' : importState?.fileName ? 'Preview only — not yet in the catalog.' : 'Not configured.'}</small></div><button onClick={() => setStep(3)}>Edit</button></div>
                 <div className="notice-box">Business profile and preferences are saved in this browser. Vendor offers are persisted only when the import API reports success. Policy preferences and approvals are not server-side workflows.</div>
               </div>
@@ -356,7 +323,7 @@ function Onboarding({ user, onComplete }) {
             </div>
           </section>
         </div>
-        <p className="wizard-footnote">Your progress stays in this tab until you finish setup. Demo profile data is saved locally in this browser.</p>
+        <p className="wizard-footnote">Your progress stays in this tab until you finish setup. Profile data is saved locally in this browser.</p>
       </main>
     </div>
   );
@@ -556,7 +523,7 @@ function PurchaseDesk({ defaults }) {
         <section className="surface"><h3>Policy guardrails</h3><p>Hard constraints checked independently of ranking.</p><div className="guardrail-list">{['Budget ceiling', 'SKU compatibility', 'Inventory quantity', 'Approved supplier', 'Delivery deadline', 'Quality & reliability'].map((x) => <span key={x}>✓ &nbsp; {x}</span>)}</div></section>
         <section className="surface"><h3>Audit trail</h3><p>{result ? `${result.auditEvents?.length || 0} events recorded for this evaluation.` : 'Each evaluation creates traceable decision events.'}</p>{result?.auditEvents?.length ? result.auditEvents.map((ev, i) => <div className="audit-event" key={ev.eventId || ev.requestId || i}><i aria-hidden="true" /><span><b>{String(ev.eventType || 'Event').replaceAll('_', ' ')}</b><small>{ev.timestamp ? new Date(ev.timestamp).toLocaleString() : 'Recorded'}</small></span></div>) : <div className="audit-flow">Evaluation requested <span aria-hidden="true">→</span> Offers compared <span aria-hidden="true">→</span> Policy validated</div>}</section>
       </div>
-      <p className="page-footnote">Decision records are held in memory and reset when the server restarts. No payment is executed.</p>
+      <p className="page-footnote">Decision records are persisted by the backend for this workspace and listed in Purchase history. No payment is executed.</p>
     </div>
   );
 }
@@ -627,7 +594,7 @@ function Dashboard({ profile, onStartPurchase, permissions }) {
         </section>
         <section className="surface"><span className="step-kicker">Purchasing policies</span><h3>Defaults at a glance</h3><div className="compact-facts"><span>Default delivery<b>{profile?.deadline || '5'} days</b></span><span>Minimum quality<b>{profile?.quality || '70'}/100</b></span><span>Approved vendors<b>{profile?.approvedOnly ? 'Required' : 'Optional'}</b></span></div><small>Workspace preferences — request constraints are evaluated per purchase, not stored as server policy.</small><div style={{ marginTop: 10 }}><button className="inline-link" onClick={() => go('/app/policies')}>Review policy defaults →</button></div></section>
       </div>
-      <div className="honest-banner" role="note"><span aria-hidden="true">ⓘ</span><p><b>Prototype data, clearly labeled.</b> Catalog counts come from the live API. Purchases and audit events are stored in memory and reset on restart. Approvals and payments are not implemented.</p></div>
+      <div className="honest-banner" role="note"><span aria-hidden="true">ⓘ</span><p><b>Prototype data, clearly labeled.</b> Catalog counts, purchases, and audit events come from live API endpoints and are stored by the backend, not in the browser. Approvals and payments are not implemented.</p></div>
       <WorkspaceSecurityStatus />
       {!canImport ? <p className="muted-note">Vendor import is disabled for your role. Contact a workspace owner for access — this button is hidden by permission, enforced by the server.</p> : null}
     </div>
@@ -725,52 +692,136 @@ function ImportPage({ onImported }) {
 }
 
 /* ================= History ================= */
+const formatDateTime = (value) => {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+};
+
+function decisionTone(status) {
+  if (status === 'RECOMMENDED') return 'ok';
+  if (status === 'NO_ELIGIBLE_OFFER') return 'neutral';
+  return 'warn';
+}
+
+function PurchaseRecordDetail({ record }) {
+  if (!record) return null;
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <StatusBadge tone={decisionTone(record.decision?.status)}>{record.decision?.status || 'Unknown'}</StatusBadge>
+        <StatusBadge tone={record.policy?.passed ? 'ok' : 'error'}>{record.policy?.passed ? 'Policy passed' : 'Policy blocked'}</StatusBadge>
+        <StatusBadge tone="warn">Payment locked</StatusBadge>
+      </div>
+      <ul className="confirm-list">
+        <li><span>Purchase ID</span><b><code>{record.purchaseId}</code></b></li>
+        <li><span>Created</span><b>{formatDateTime(record.createdAt)}</b></li>
+        <li><span>Product · Qty</span><b>{record.request?.productId} · {record.request?.quantity}</b></li>
+        <li><span>Recommendation</span><b>{record.recommendation ? `${record.recommendation.vendorId} (${record.recommendation.offerId}) · ${formatMoney(record.recommendation.totalMinor, record.recommendation.currency)}` : 'None'}</b></li>
+        <li><span>Explanation</span><b style={{ fontWeight: 400 }}>{record.explanation}</b></li>
+      </ul>
+      {(record.policy?.violations || []).length ? <div className="result-findings"><b>Policy findings</b>{record.policy.violations.map((v, i) => <p key={i}><code>{v.code}</code> — {v.message}</p>)}</div> : null}
+      {(record.auditEvents || []).length ? <div><h3 style={{ fontSize: 15 }}>Audit events ({record.auditEvents.length})</h3>{record.auditEvents.map((ev, i) => <div className="audit-event" key={ev.eventId || i}><i aria-hidden="true" /><span><b>{String(ev.eventType || '').replaceAll('_', ' ')}</b><small>{formatDateTime(ev.timestamp)}</small></span></div>)}</div> : null}
+    </div>
+  );
+}
+
 function HistoryPage() {
+  const [status, setStatus] = useState('');
+  const [records, setRecords] = useState(null);
+  const [listError, setListError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [selected, setSelected] = useState(null);
   const [id, setId] = useState('');
-  const [record, setRecord] = useState(null);
-  const [error, setError] = useState('');
+  const [lookupError, setLookupError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true); setListError('');
+    listPurchases(status || undefined)
+      .then((data) => { if (alive) setRecords(Array.isArray(data) ? data : []); })
+      .catch((err) => { if (alive) { setListError(err.message || 'Could not load purchase history.'); setRecords(null); } })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [status, reloadKey]);
+
   async function lookup(e) {
     e?.preventDefault();
-    setBusy(true); setError(''); setRecord(null);
+    setBusy(true); setLookupError(''); setSelected(null);
     try {
       const data = await getPurchaseById(id);
-      setRecord(data);
-    } catch (err) { setError(err.message); } finally { setBusy(false); }
+      setSelected(data);
+    } catch (err) { setLookupError(err.message); } finally { setBusy(false); }
   }
+
   return (
     <div className="page-stack">
       <PageHeader
         eyebrow="Purchasing activity"
         title="Purchase history"
-        description="Look up a purchase by its ID. There is no list endpoint yet, so this page does not fake a history table."
+        description="Every evaluation in this workspace, newest first, read from GET /api/purchases. Open a record to inspect its decision, policy outcome, and audit events."
         actions={<Button onClick={() => go('/app/purchases/new')}>New purchase request <span aria-hidden="true">→</span></Button>}
       />
       <section className="surface">
-        <InlineAlert tone="info" title="Honest limitation">The backend supports <code>GET /api/purchases/:purchaseId</code> but no list endpoint. Records are held in memory and reset when the server restarts. A recommendation is never shown as a payment.</InlineAlert>
+        <div className="lookup-row">
+          <label className="field"><span className="field-label">Filter by decision</span>
+            <select value={status} onChange={(e) => { setStatus(e.target.value); setSelected(null); }}>
+              <option value="">All stored purchases</option>
+              <option value="RECOMMENDED">Recommended</option>
+              <option value="POLICY_REJECTED">Policy rejected</option>
+              <option value="NO_ELIGIBLE_OFFER">No eligible offer</option>
+            </select>
+          </label>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', paddingBottom: 4 }}>
+            <Button variant="secondary" onClick={() => setReloadKey((k) => k + 1)} disabled={loading}>Refresh</Button>
+            <span className="muted-note">{records ? `${records.length} record${records.length === 1 ? '' : 's'}` : ''}</span>
+          </div>
+        </div>
+        {loading ? <LoadingState rows={4} label="Reading purchase history…" /> : listError ? (
+          <InlineAlert tone="error" title="Purchase history could not be loaded">
+            {listError} <div style={{ marginTop: 8 }}><Button variant="secondary" onClick={() => setReloadKey((k) => k + 1)}>Retry</Button></div>
+          </InlineAlert>
+        ) : !records.length ? (
+          <EmptyState folio="03" title={status ? 'No purchases match this filter' : 'No purchase records yet'} description={status ? 'Clear the filter or evaluate another purchase request.' : 'Evaluate a purchase on the purchase desk. That creates a stored decision record you can review here.'} action={<Button variant="secondary" onClick={() => status ? setStatus('') : go('/app/purchases/new')}>{status ? 'Clear filter' : 'Open purchase desk'}</Button>} />
+        ) : (
+          <div className="table-scroll" tabIndex={0}>
+            <table className="data-table">
+              <thead><tr><th>Purchase</th><th>Request</th><th>Decision</th><th>Policy</th><th>Recommendation</th><th /></tr></thead>
+              <tbody>
+                {records.map((record) => (
+                  <tr key={record.purchaseId}>
+                    <td><code>{record.purchaseId}</code><small className="cell-sub">{formatDateTime(record.createdAt)}</small></td>
+                    <td><b>{record.request?.productId}</b><small className="cell-sub">Qty {record.request?.quantity} · {record.request?.currency}</small></td>
+                    <td><StatusBadge tone={decisionTone(record.decision?.status)}>{record.decision?.status || 'Unknown'}</StatusBadge></td>
+                    <td>{record.policy?.passed ? <StatusBadge tone="ok">Passed</StatusBadge> : <StatusBadge tone="error">Blocked</StatusBadge>}</td>
+                    <td className="num">{record.recommendation ? formatMoney(record.recommendation.totalMinor, record.recommendation.currency) : '—'}<small className="cell-sub">{record.recommendation?.vendorId || 'No recommendation'}</small></td>
+                    <td><button className="inline-link" onClick={() => setSelected(record)}>View →</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {selected ? (
+        <section className="surface">
+          <div className="surface-head"><div><span className="step-kicker">Stored decision record</span><h2>Purchase detail</h2><p>Read back from the tenant-scoped purchase store.</p></div><button className="text-button" onClick={() => setSelected(null)}>Close</button></div>
+          <PurchaseRecordDetail record={selected} />
+        </section>
+      ) : null}
+
+      <section className="surface">
+        <span className="step-kicker">Direct lookup</span>
+        <h3>Look up by purchase ID</h3>
+        <p className="muted-note">Useful when you have an ID that is outside the current filter. The server returns only records owned by this workspace.</p>
         <form onSubmit={lookup} className="lookup-row">
           <label className="field"><span className="field-label">Purchase ID (e.g. purchase_abc123…)</span><input value={id} onChange={(e) => setId(e.target.value)} placeholder="Paste a purchase ID from the purchase desk" /></label>
           <Button type="submit" disabled={busy || !id.trim()}>{busy ? 'Looking up…' : 'Look up'}</Button>
         </form>
-        {error ? <div className="form-error" role="alert">{error}</div> : null}
-        {!record && !error ? <EmptyState folio="03" title="No record loaded" description="Evaluate a purchase on the purchase desk, copy its purchase ID, and paste it here to inspect the stored decision, policy outcome, and audit events." action={<Button variant="secondary" onClick={() => go('/app/purchases/new')}>Open purchase desk</Button>} /> : null}
-        {record ? (
-          <div style={{ display: 'grid', gap: 12, marginTop: 8 }}>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <StatusBadge tone={record.decision?.status === 'RECOMMENDED' ? 'ok' : 'warn'}>{record.decision?.status || 'Unknown'}</StatusBadge>
-              <StatusBadge tone={record.policy?.passed ? 'ok' : 'error'}>{record.policy?.passed ? 'Policy passed' : 'Policy blocked'}</StatusBadge>
-              <StatusBadge tone="warn">Payment locked</StatusBadge>
-            </div>
-            <div className="confirm-list">
-              <li><span>Purchase ID</span><b><code>{record.purchaseId}</code></b></li>
-              <li><span>Product · Qty</span><b>{record.request?.productId} · {record.request?.quantity}</b></li>
-              <li><span>Recommendation</span><b>{record.recommendation ? `${record.recommendation.vendorId} (${record.recommendation.offerId}) · ${formatMoney(record.recommendation.totalMinor, record.recommendation.currency)}` : 'None'}</b></li>
-              <li><span>Explanation</span><b style={{ fontWeight: 400 }}>{record.explanation}</b></li>
-            </div>
-            {(record.policy?.violations || []).length ? <div className="result-findings"><b>Policy findings</b>{record.policy.violations.map((v, i) => <p key={i}><code>{v.code}</code> — {v.message}</p>)}</div> : null}
-            {(record.auditEvents || []).length ? <div><h3 style={{ fontSize: 15 }}>Audit events ({record.auditEvents.length})</h3>{record.auditEvents.map((ev, i) => <div className="audit-event" key={i}><i aria-hidden="true" /><span><b>{String(ev.eventType || '').replaceAll('_', ' ')}</b><small>{ev.timestamp ? new Date(ev.timestamp).toLocaleString() : 'Recorded'}</small></span></div>)}</div> : null}
-          </div>
-        ) : null}
+        {lookupError ? <div className="form-error" role="alert">{lookupError}</div> : null}
       </section>
     </div>
   );
@@ -802,40 +853,172 @@ function PoliciesPage({ profile }) {
 }
 
 /* ================= Audit ================= */
+function metadataSummary(metadata) {
+  if (!metadata || typeof metadata !== 'object') return '—';
+  const entries = Object.entries(metadata);
+  if (!entries.length) return '—';
+  return entries.map(([key, value]) => `${key}: ${value && typeof value === 'object' ? JSON.stringify(value) : String(value)}`).join(' · ');
+}
+
 function AuditPage() {
+  const [events, setEvents] = useState(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [query, setQuery] = useState('');
+  const [eventType, setEventType] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true); setError('');
+    listAuditEvents()
+      .then((data) => {
+        if (!alive) return;
+        const sorted = [...data].sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+        setEvents(sorted);
+      })
+      .catch((err) => { if (alive) { setError(err.message || 'Could not load audit events.'); setEvents(null); } })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [reloadKey]);
+
+  const types = useMemo(() => [...new Set((events || []).map((ev) => ev.eventType).filter(Boolean))].sort(), [events]);
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return (events || []).filter((ev) => {
+      if (eventType && ev.eventType !== eventType) return false;
+      if (!needle) return true;
+      const haystack = [ev.eventType, ev.actorId, ev.requestId, ev.purchaseId, metadataSummary(ev.metadata)].join(' ').toLowerCase();
+      return haystack.includes(needle);
+    });
+  }, [events, query, eventType]);
+
   return (
     <div className="page-stack">
-      <PageHeader eyebrow="Traceability" title="Audit trail" description="Events only from real sources. There is no global audit listing endpoint, so this page does not synthesize events." />
+      <PageHeader
+        eyebrow="Traceability"
+        title="Audit trail"
+        description="Events for this workspace, newest first, read from GET /api/audit/events. The endpoint returns up to 200 records."
+        actions={<Button variant="secondary" onClick={() => setReloadKey((k) => k + 1)} disabled={loading}>Refresh</Button>}
+      />
       <section className="surface">
-        <InlineAlert tone="info" title="Current source of truth">Audit events are created during purchase evaluation and stored on the purchase record (in memory). They are visible in the purchase-desk result panel and on the history lookup — not in a separate global feed.</InlineAlert>
-        <div className="audit-placeholder"><span className="step-kicker">01</span><div><b>Purchase evaluation events</b><p className="muted-note">Evaluate a request to generate events, then inspect them alongside the recommendation and policy outcome.</p></div><Button variant="secondary" onClick={() => go('/app/purchases/new')}>Open purchase desk</Button></div>
-        <p className="muted-note" style={{ marginTop: 12 }}>No immutability or compliance certification is implied — the store resets on server restart.</p>
+        <div className="lookup-row">
+          <label className="field"><span className="field-label">Search events</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Event, actor, request ID, or metadata" /></label>
+          <label className="field"><span className="field-label">Event type</span>
+            <select value={eventType} onChange={(e) => setEventType(e.target.value)}>
+              <option value="">All event types</option>
+              {types.map((type) => <option key={type} value={type}>{String(type).replaceAll('_', ' ')}</option>)}
+            </select>
+          </label>
+        </div>
+        {loading ? <LoadingState rows={4} label="Reading audit events…" /> : error ? (
+          <InlineAlert tone="error" title="Audit events could not be loaded">
+            {error} <div style={{ marginTop: 8 }}><Button variant="secondary" onClick={() => setReloadKey((k) => k + 1)}>Retry</Button></div>
+          </InlineAlert>
+        ) : !events.length ? (
+          <EmptyState folio="04" title="No audit events yet" description="Events are recorded during purchase evaluation and workspace activity. Evaluate a purchase request to create the first entries." action={<Button onClick={() => go('/app/purchases/new')}>Open purchase desk →</Button>} />
+        ) : !filtered.length ? (
+          <EmptyState folio="04" title="No events match this filter" description="Clear the search or choose a different event type. Filtering runs client-side over the events returned by the server." action={<Button variant="secondary" onClick={() => { setQuery(''); setEventType(''); }}>Clear filters</Button>} />
+        ) : (
+          <>
+            <p className="muted-note">{filtered.length} of {events.length} events shown · Source: GET /api/audit/events</p>
+            <div className="table-scroll" tabIndex={0}>
+              <table className="data-table">
+                <thead><tr><th>Time</th><th>Event</th><th>Actor</th><th>Reference</th><th>Metadata</th></tr></thead>
+                <tbody>
+                  {filtered.map((ev) => (
+                    <tr key={ev.eventId}>
+                      <td>{formatDateTime(ev.timestamp)}</td>
+                      <td><b>{String(ev.eventType || 'Unknown').replaceAll('_', ' ')}</b><small className="cell-sub"><code>{ev.eventType}</code></small></td>
+                      <td><code>{ev.actorId || 'system'}</code></td>
+                      <td>{ev.purchaseId ? <code>{ev.purchaseId}</code> : null}{ev.requestId ? <small className="cell-sub">request <code>{ev.requestId}</code></small> : null}{!ev.purchaseId && !ev.requestId ? '—' : null}</td>
+                      <td><details><summary className="cell-sub">View metadata</summary><span className="cell-sub">{metadataSummary(ev.metadata)}</span></details></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </section>
+      <p className="page-footnote">No immutability or compliance certification is implied. Audit retention follows the deployment’s configured database.</p>
     </div>
   );
 }
 
 /* ================= Settings ================= */
 function SettingsPage({ profile, theme, onThemeChange }) {
-  const [notice, setNotice] = useState('');
-  const [verifyStatus, setVerifyStatus] = useState(null);
+  const [workspace, setWorkspace] = useState(null);
+  const [businessEmail, setBusinessEmail] = useState(null);
   const [gmailStatus, setGmailStatus] = useState(null);
+  const [members, setMembers] = useState(null);
+  const [membersError, setMembersError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [nameDraft, setNameDraft] = useState('');
+  const [savingName, setSavingName] = useState(false);
+  const [saveMessage, setSaveMessage] = useState('');
+  const [saveError, setSaveError] = useState('');
+
   useEffect(() => {
     let alive = true;
+    setLoading(true); setLoadError('');
     (async () => {
       try {
-        const current = await getCurrentWorkspace().catch(() => null);
-        if (!alive || !current?.tenant) return;
-        const business = await getBusinessEmailStatus(current.tenant.tenantId).catch(() => null);
-        const gmail = await getGmailStatus().catch(() => null);
+        const current = await getCurrentWorkspace();
         if (!alive) return;
-        setVerifyStatus(business);
+        setWorkspace(current);
+        setNameDraft(current?.tenant?.businessName || '');
+        const tenantId = current?.tenant?.tenantId;
+        if (!tenantId) return;
+        const permissions = current.permissions || current.membership?.permissions || [];
+        const emailStatus = await getBusinessEmailStatus(tenantId).catch(() => null);
+        const gmail = await getGmailStatus().catch(() => null);
+        let memberList = null;
+        let memberErr = '';
+        if (permissions.includes('members:read')) {
+          try { memberList = await listWorkspaceMembers(tenantId); }
+          catch (err) { memberErr = err.message || 'Member list unavailable.'; }
+        }
+        if (!alive) return;
+        setBusinessEmail(emailStatus);
         setGmailStatus(gmail);
-      } catch { /* read-only display */ }
+        setMembers(memberList);
+        setMembersError(memberErr);
+      } catch (err) {
+        if (alive) setLoadError(err.message || 'Workspace could not be loaded.');
+      } finally {
+        if (alive) setLoading(false);
+      }
     })();
     return () => { alive = false; };
   }, []);
-  const fields = [
+
+  const tenant = workspace?.tenant;
+  const permissions = workspace?.permissions || workspace?.membership?.permissions || [];
+  const canManage = permissions.includes('workspace:manage');
+  const verifiedLabel = !businessEmail
+    ? 'Status unavailable'
+    : businessEmail.verifiedAt
+      ? `Verified ${formatDateTime(businessEmail.verifiedAt)} (${businessEmail.verificationMethod || 'verified'})`
+      : 'Not verified';
+
+  async function renameWorkspace(e) {
+    e.preventDefault();
+    const tenantId = tenant?.tenantId;
+    const nextName = nameDraft.trim();
+    if (!tenantId || !nextName) { setSaveError('Enter a workspace name.'); return; }
+    setSavingName(true); setSaveError(''); setSaveMessage('');
+    try {
+      const data = await updateWorkspace(tenantId, { businessName: nextName });
+      setWorkspace((prev) => ({ ...prev, tenant: data?.tenant || { ...prev?.tenant, businessName: nextName } }));
+      setSaveMessage('Workspace name updated on the server.');
+    } catch (err) {
+      setSaveError(err.message || 'Could not update the workspace name.');
+    } finally { setSavingName(false); }
+  }
+
+  const localFields = [
     ['Business name', profile?.businessName], ['Legal name', profile?.legalName], ['Business email', profile?.email],
     ['Country', profile?.country], ['Primary currency', profile?.currency], ['Industry', profile?.industry],
     ['Business size', profile?.size], ['Website', profile?.website || 'Not provided'],
@@ -843,28 +1026,104 @@ function SettingsPage({ profile, theme, onThemeChange }) {
     ['Delivery default', `${profile?.deadline || 5} days`],
     ['Approval contact', profile?.managerName || 'Not configured'], ['Approval email', profile?.managerEmail || 'Not configured'],
   ];
+
   return (
     <div className="page-stack">
-      <PageHeader eyebrow="Workspace configuration" title="Workspace settings" description="Business identity, procurement defaults, review preferences, team access, and interface theme — each labeled by where it is actually stored." actions={<span className="demo-chip">Local demo data</span>} />
+      <PageHeader
+        eyebrow="Workspace configuration"
+        title="Workspace settings"
+        description="Workspace identity, permissions, and team membership come from the server. Local browser preferences are labeled separately."
+        actions={<span className="demo-chip">{workspace ? 'Server workspace' : 'Not connected'}</span>}
+      />
+
+      {loading ? (
+        <section className="surface"><LoadingState rows={3} label="Reading workspace from the server…" /></section>
+      ) : loadError ? (
+        <section className="surface">
+          <InlineAlert tone="error" title="Workspace unavailable">
+            {loadError}
+            <div style={{ marginTop: 8, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <Button variant="secondary" onClick={() => window.location.reload()}>Retry</Button>
+              <button className="inline-link" onClick={() => go('/login')}>Sign in with Google →</button>
+            </div>
+          </InlineAlert>
+        </section>
+      ) : workspace ? (
+        <>
+          <section className="surface">
+            <span className="step-kicker">Workspace · server record</span>
+            <div className="settings-grid">
+              <div><span>Workspace</span><b>{tenant?.businessName || 'Not named'}</b></div>
+              <div><span>Workspace ID</span><b><code>{tenant?.tenantId || '—'}</code></b></div>
+              <div><span>Status</span><b>{tenant?.status || 'Unknown'}</b></div>
+              <div><span>Your role</span><b>{workspace.membership?.role || 'Member'}</b></div>
+              <div><span>Business email</span><b>{businessEmail?.businessEmail || tenant?.businessEmail || 'Not set'}</b></div>
+              <div><span>Email verification</span><b>{verifiedLabel}</b></div>
+            </div>
+            <p className="muted-note" style={{ marginBottom: 8 }}>Permissions granted to your role on this workspace:</p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+              {permissions.length ? permissions.map((permission) => <StatusBadge key={permission} tone="neutral">{permission}</StatusBadge>) : <span className="muted-note">No permissions were returned.</span>}
+            </div>
+            {canManage ? (
+              <form onSubmit={renameWorkspace} className="lookup-row" style={{ marginBottom: 0 }}>
+                <label className="field"><span className="field-label">Workspace name</span><input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} placeholder="Workspace name" /></label>
+                <Button type="submit" disabled={savingName || !nameDraft.trim() || nameDraft.trim() === tenant?.businessName}>{savingName ? 'Saving…' : 'Save name'}</Button>
+              </form>
+            ) : <p className="muted-note">Your role can read this workspace but does not include workspace:manage.</p>}
+            {saveError ? <div className="form-error" role="alert" style={{ marginTop: 12 }}>{saveError}</div> : null}
+            {saveMessage ? <InlineAlert tone="ok" title="Saved">{saveMessage}</InlineAlert> : null}
+          </section>
+
+          <section className="surface">
+            <span className="step-kicker">Team · server membership records</span>
+            <h3>Workspace members</h3>
+            {membersError ? (
+              <InlineAlert tone="warn" title="Member list unavailable">{membersError}</InlineAlert>
+            ) : members === null ? (
+              <p className="muted-note">Your role ({workspace.membership?.role || 'member'}) does not include members:read, so the server does not expose the member list to this page.</p>
+            ) : members.length === 0 ? (
+              <p className="muted-note">The server returned no members for this workspace.</p>
+            ) : (
+              <div className="table-scroll" tabIndex={0}>
+                <table className="data-table">
+                  <thead><tr><th>User ID</th><th>Role</th><th>Status</th><th>Member since</th></tr></thead>
+                  <tbody>
+                    {members.map((member) => (
+                      <tr key={member.userId}>
+                        <td><code>{member.userId}</code></td>
+                        <td><b>{member.role}</b></td>
+                        <td><StatusBadge tone={member.status === 'active' ? 'ok' : member.status === 'invited' ? 'warn' : 'error'}>{member.status}</StatusBadge></td>
+                        <td>{formatDateTime(member.createdAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="muted-note" style={{ marginTop: 10 }}>The API also supports invitations and role changes. Those controls are not exposed in this prototype.</p>
+          </section>
+        </>
+      ) : null}
+
       <section className="surface">
-        <span className="step-kicker">Business identity · saved in this browser</span>
-        <div className="settings-grid">{fields.map(([k, v]) => <div key={k}><span>{k}</span><b>{v || 'Not provided'}</b></div>)}</div>
-        <div className="notice-box">There is no server-side business profile API yet. “Edit workspace setup” reopens local onboarding — it does not write to the server.</div>
-        {verifyStatus ? <p className="muted-note">Server verification: {verifyStatus.businessEmail || 'no business email'} · {verifyStatus.verifiedAt ? `verified ${new Date(verifyStatus.verifiedAt).toLocaleString()} (${verifyStatus.verificationMethod || 'verified'})` : 'not verified — a typed address never proves ownership'}.</p> : <p className="muted-note">Server verification: checking… (sign in with Google and select a workspace to see status).</p>}
-        {gmailStatus && gmailStatus.enabled !== false ? <p className="muted-note">Gmail mailbox: {gmailStatus.connected ? `connected (${gmailStatus.mailboxEmail || ''})` : 'disconnected'}. Sign-in never grants mailbox access; connection requires separate consent.</p> : <p className="muted-note">Gmail mailbox: not configured for this deployment.</p>}
-        <div style={{ marginTop: 12, display: 'flex', gap: 12, flexWrap: 'wrap' }}><Button onClick={() => go('/app/onboarding')}>Edit workspace setup</Button></div>
+        <span className="step-kicker">Local profile · this browser only</span>
+        <div className="settings-grid">{localFields.map(([k, v]) => <div key={k}><span>{k}</span><b>{v || 'Not provided'}</b></div>)}</div>
+        <div className="notice-box">These values prefill purchase requests and are saved in this browser. They are separate from the server workspace record above and are not written to it.</div>
+        <div style={{ marginTop: 12, display: 'flex', gap: 12, flexWrap: 'wrap' }}><Button onClick={() => go('/app/onboarding')}>Edit local profile</Button></div>
       </section>
+
       <section className="surface">
         <span className="step-kicker">Review preferences · local preference, not permission</span>
-        <p className="muted-note">Human review: {profile?.allReview ? 'preferred' : 'not required'} · Thresholds workflow: {profile?.thresholds ? 'intended' : 'not configured'}. Approval endpoints are not implemented.</p>
+        <p className="muted-note">Human review: {profile?.allReview ? 'preferred' : 'not required'} · Thresholds workflow: {profile?.thresholds ? 'intended' : 'not configured'}. Approval endpoints are not implemented, so these settings do not grant approval authority.</p>
       </section>
+
       <section className="surface">
-        <span className="step-kicker">Team · not connected</span>
-        <h3>Team management isn’t available yet</h3>
-        <p className="muted-note">This prototype has no account service, invitations, or server-side roles. No team changes can be made here.</p>
-        <Button variant="secondary" onClick={() => setNotice('Team management will be available after authentication and organization APIs are implemented.')}>Why is this unavailable?</Button>
-        {notice ? <div className="notice-box" style={{ marginTop: 12 }}>{notice}</div> : null}
+        <span className="step-kicker">Mailbox · server integration</span>
+        {gmailStatus && gmailStatus.enabled !== false ? (
+          <p className="muted-note">Gmail mailbox: {gmailStatus.connected ? `connected (${gmailStatus.mailboxEmail || 'mailbox'})` : 'disconnected'}. Sign-in never grants mailbox access; connection requires separate consent.</p>
+        ) : <p className="muted-note">Gmail mailbox: not configured for this deployment.</p>}
       </section>
+
       <section className="surface">
         <span className="step-kicker">Theme and interface</span>
         <p className="muted-note">Light, dark, or follow your operating system. Your choice persists after reload; System follows OS changes live.</p>
@@ -926,7 +1185,7 @@ function AppShell({ page, profile, user, onSignOut, theme, onThemeChange, childr
       <aside className={mobileOpen ? 'app-sidebar mobile-open' : 'app-sidebar'} aria-label="Primary navigation">
         <div className="sidebar-brand"><Logo light /><button className="sidebar-close" onClick={() => setMobileOpen(false)} aria-label="Close navigation">×</button></div>
         <div className="workspace-label">Workspace</div>
-        <div className="workspace-card"><span className="workspace-avatar">{(profile?.businessName || 'M').slice(0, 1).toUpperCase()}</span><span><b>{profile?.businessName || 'Demo workspace'}</b><small>Local demo environment</small></span><span className="workspace-chevron" aria-hidden="true">⌄</span></div>
+        <div className="workspace-card"><span className="workspace-avatar">{(profile?.businessName || 'M').slice(0, 1).toUpperCase()}</span><span><b>{profile?.businessName || 'Workspace'}</b><small>Prototype workspace</small></span><span className="workspace-chevron" aria-hidden="true">⌄</span></div>
         <nav className="app-nav">
           {groups.map((g) => (
             <div key={g.label}>
@@ -941,7 +1200,7 @@ function AppShell({ page, profile, user, onSignOut, theme, onThemeChange, childr
         </nav>
         <div className="sidebar-bottom">
           <div className="prototype-status"><span aria-hidden="true" />Prototype mode<small>Payments disabled · {apiOnline ? 'API connected' : 'API status unknown'}</small></div>
-          <div className="sidebar-user"><span className="user-avatar">{(user?.fullName || 'D').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()}</span><span><b>{user?.fullName || 'Demo user'}</b><small>{user?.email || 'Local session'}</small></span><button aria-label="Sign out" title="Sign out" onClick={onSignOut}>↪</button></div>
+          <div className="sidebar-user"><span className="user-avatar">{(user?.fullName || 'D').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()}</span><span><b>{user?.fullName || 'Signed out'}</b><small>{user?.email || 'No server session'}</small></span><button aria-label="Sign out" title="Sign out" onClick={onSignOut}>↪</button></div>
         </div>
       </aside>
       {mobileOpen ? <button className="mobile-scrim" onClick={() => setMobileOpen(false)} aria-label="Close navigation" /> : null}
@@ -951,7 +1210,7 @@ function AppShell({ page, profile, user, onSignOut, theme, onThemeChange, childr
           <div className="breadcrumbs" aria-label="Breadcrumb"><span>Workspace</span><b aria-hidden="true">/</b><strong>{titles[page] || 'Overview'}</strong></div>
           <div className="topbar-right">
             <ThemeControl value={theme} onChange={onThemeChange} />
-            <span className="demo-chip">Demo</span>
+            <span className="demo-chip">Prototype</span>
             <button className="topbar-user" onClick={() => go('/app/settings/business')} title="Business settings">{(profile?.businessName || 'M').slice(0, 1).toUpperCase()}</button>
           </div>
         </header>
@@ -962,20 +1221,17 @@ function AppShell({ page, profile, user, onSignOut, theme, onThemeChange, childr
   );
 }
 
-/* ================= App (API-validated session; demo local kept for preview only) ================= */
+/* ================= App (server-validated Google session) ================= */
 export default function App() {
   const [path, setPath] = useState(window.location.pathname);
   const [serverUser, setServerUser] = useState(null);
   const [sessionLoading, setSessionLoading] = useState(true);
-  const [sessionError, setSessionError] = useState('');
-  const [demoUser, setDemoUser] = useState(() => { try { return JSON.parse(localStorage.getItem(SESSION) || 'null'); } catch { return null; } });
   const [workspaces, setWorkspaces] = useState([]);
   const [permissions, setPermissions] = useState(null);
   const [profile, setProfile] = useState(() => readStore());
   const [theme, setTheme] = useState(() => { try { const t = localStorage.getItem(THEME_KEY); return ['light', 'dark', 'system'].includes(t) ? t : 'system'; } catch { return 'system'; } });
   const [apiOnline, setApiOnline] = useState(false);
-  const user = serverUser || demoUser;
-  const isServerSession = Boolean(serverUser);
+  const user = serverUser;
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1017,7 +1273,6 @@ export default function App() {
             email: session.user.email,
             userId: session.user.userId,
           });
-          setSessionError('');
           try {
             const mine = await getMyWorkspaces().catch(() => null);
             const list = mine?.memberships || [];
@@ -1032,8 +1287,8 @@ export default function App() {
         } else {
           setServerUser(null);
         }
-      } catch (e) {
-        if (alive) setSessionError(e.message || 'Session check failed.');
+      } catch {
+        /* Session check failed; the user stays signed out. */
       } finally {
         if (alive) setSessionLoading(false);
       }
@@ -1049,19 +1304,10 @@ export default function App() {
     return () => { window.removeEventListener('popstate', onPop); window.removeEventListener('mandate:navigate', onNavigate); };
   }, []);
 
-  function authenticate(nextUser) {
-    // Demo preview only — does not grant server access. Server data requires Google sign-in.
-    localStorage.setItem(SESSION, JSON.stringify(nextUser));
-    setDemoUser(nextUser);
-    const saved = readStore();
-    if (saved) { const merged = { ...saved, fullName: nextUser.fullName, email: nextUser.email }; setProfile(merged); go('/app/dashboard'); }
-    else { setProfile(null); go('/app/onboarding'); }
-  }
   function complete(profileData) { setProfile(profileData); saveStore(profileData); go('/app/dashboard'); }
   async function signOut() {
     try { await apiLogout(); } catch { /* session may already be expired */ }
-    try { localStorage.removeItem(SESSION); } catch { /* ignore */ }
-    setDemoUser(null);
+    try { localStorage.removeItem('mandate.demo.session.v1'); } catch { /* ignore */ }
     setServerUser(null);
     setWorkspaces([]);
     setPermissions(null);
@@ -1077,7 +1323,7 @@ export default function App() {
     });
   }
 
-  if (path === '/login' || path === '/signup') return <AuthPage key={path} mode={path === '/signup' ? 'signup' : 'login'} onAuth={authenticate} />;
+  if (path === '/login' || path === '/signup') return <AuthPage key={path} mode={path === '/signup' ? 'signup' : 'login'} />;
   if (path === '/forgot-password') return <ForgotPassword />;
   if (path === '/') return <LandingPage />;
   if (sessionLoading) {
@@ -1105,26 +1351,7 @@ export default function App() {
                 : path === '/app/audit' ? 'audit'
                   : path === '/app/settings/business' || path === '/app/settings/team' ? 'business' : 'dashboard';
 
-  const sessionBanner = !isServerSession ? (
-    <div className="wrap" style={{ paddingTop: 12 }}>
-      <div className="notice-box" role="note">
-        {sessionError ? `Signed out — ${sessionError} ` : 'Demo preview — server data requires Google sign-in. '}
-        <button className="inline-link" onClick={() => go('/login')}>Sign in with Google →</button>
-        {workspaces.length > 1 ? (
-          <span style={{ marginLeft: 12 }}>
-            Workspace:{' '}
-            <select
-              aria-label="Select workspace"
-              value={(() => { try { return localStorage.getItem('mandate.selected.tenant.v1') || ''; } catch { return ''; } })()}
-              onChange={(e) => { setSelectedTenantId(e.target.value); window.location.reload(); }}
-            >
-              {workspaces.map((w) => <option key={w.tenantId} value={w.tenantId}>{w.businessName || w.tenantId} ({w.role})</option>)}
-            </select>
-          </span>
-        ) : null}
-      </div>
-    </div>
-  ) : (workspaces.length > 1 ? (
+  const sessionBanner = workspaces.length > 1 ? (
     <div className="wrap" style={{ paddingTop: 12 }}>
       <p className="muted-note">
         Workspace:{' '}
@@ -1137,7 +1364,7 @@ export default function App() {
         </select>
       </p>
     </div>
-  ) : null);
+  ) : null;
 
   return (
     <>
