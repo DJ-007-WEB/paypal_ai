@@ -23,6 +23,7 @@ const { createUserService } = require('./services/user.service');
 const { createTenantService } = require('./services/tenant.service');
 const { createCryptoService } = require('./services/crypto.service');
 const { createGmailService } = require('./services/gmail.service');
+const { createAiService } = require('./services/ai.service');
 
 function createApp(options = {}) {
   const config = options.config || loadConfig(process.env);
@@ -38,6 +39,7 @@ function createApp(options = {}) {
   });
   const cryptoService = options.cryptoService || createCryptoService({ config });
   const gmailService = options.gmailService || createGmailService({ collection: options.gmailCollection || null, cryptoService, config });
+  const aiService = options.aiService || createAiService({ config });
 
   const allowTestPrincipal = options.allowTestPrincipal === true;
   const oidcExchange = options.oidcExchange || null;
@@ -155,6 +157,18 @@ function createApp(options = {}) {
     res.json({ success: true, data: { status: 'ok', service: 'mandate-api' } });
   });
 
+  // --- Advisory AI status (authenticated; never exposes credentials) ---
+  app.get('/api/integrations/ai/status', requireAuthentication, resolveWorkspaceMembership, (req, res) => {
+    res.json({
+      success: true,
+      data: {
+        ...aiService.getStatus(),
+        advisoryOnly: true,
+        authoritative: 'deterministic decision engine and policy service',
+      },
+    });
+  });
+
   // --- Auth flow (special: no tenant until membership resolved) ---
   const authRouter = createAuthRoutes({ config, userService, sessionStore, auditService, oidcExchange });
   // Auth start/callback rate-limited strictly
@@ -199,9 +213,11 @@ function createApp(options = {}) {
   app.use('/api', vendorRateGate, requireAuthentication, resolveWorkspaceMembership, vendorPermissionGate, csrfProtection, vendorRouter);
 
   // --- Purchases (auth + tenant + per-route permission) ---
-  const purchaseRouter = createPurchaseRoutes({ vendorService, auditService, purchaseStore });
+  const purchaseRouter = createPurchaseRoutes({ vendorService, auditService, purchaseStore, aiService });
   function purchasePermissionGate(req, res, next) {
     if (req.method === 'POST' && req.path === '/purchases/evaluate') return requirePermission('purchases:create')(req, res, next);
+    if (req.method === 'POST' && req.path === '/purchases/interpret') return requirePermission('purchases:create')(req, res, next);
+    if (req.method === 'POST' && /^\/purchases\/[^/]+\/explain$/.test(req.path)) return requirePermission('purchases:read')(req, res, next);
     if (req.method === 'GET' && (req.path === '/purchases' || req.path.startsWith('/purchases/'))) return requirePermission('purchases:read')(req, res, next);
     return next();
   }
@@ -267,7 +283,7 @@ function createApp(options = {}) {
   }
 
   // Test harness exposure (never in production responses)
-  app.__services = { config, vendorService, auditService, purchaseStore, sessionStore, userService, tenantService, cryptoService, gmailService };
+  app.__services = { config, vendorService, auditService, purchaseStore, sessionStore, userService, tenantService, cryptoService, gmailService, aiService };
   app.__allowTestPrincipal = allowTestPrincipal;
 
   return app;

@@ -15,8 +15,69 @@ function createValidationError(message, details = []) {
   return error;
 }
 
-function createPurchaseRoutes({ vendorService, auditService, purchaseStore }) {
+function createPurchaseRoutes({ vendorService, auditService, purchaseStore, aiService }) {
   const router = express.Router();
+
+  // Natural-language interpretation only: AI may propose request fields, but the
+  // existing deterministic evaluator validates them before any decision is made.
+  router.post('/purchases/interpret', async (req, res, next) => {
+    try {
+      if (!req.auth || !req.auth.tenantId) {
+        const err = new Error('Tenant context is required.');
+        err.statusCode = 400;
+        err.code = 'TENANT_CONTEXT_REQUIRED';
+        throw err;
+      }
+      const tenantId = req.auth.tenantId;
+      const actorId = req.auth.userId;
+      const requestId = req.requestId || req.id || randomUUID();
+      const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+      if (!text) {
+        const err = new Error('Describe the purchase before requesting AI parsing.');
+        err.statusCode = 400;
+        err.code = 'AI_INPUT_REQUIRED';
+        throw err;
+      }
+
+      try {
+        const interpreted = await aiService.parsePurchaseRequest({
+          text,
+          defaults: req.body?.defaults,
+        });
+        try {
+          await auditService.recordEvent({
+            tenantId,
+            eventType: 'AI_PURCHASE_REQUEST_INTERPRETED',
+            requestId,
+            actorId,
+            metadata: {
+              valid: interpreted.valid,
+              warningCount: interpreted.warnings.length,
+              textLength: text.length,
+            },
+          });
+        } catch { /* audit is best-effort; never block the request */ }
+        return res.status(200).json({
+          success: true,
+          data: interpreted,
+          meta: { requestId, advisoryOnly: true },
+        });
+      } catch (error) {
+        try {
+          await auditService.recordEvent({
+            tenantId,
+            eventType: 'AI_ASSISTANCE_FAILED',
+            requestId,
+            actorId,
+            metadata: { action: 'purchases:interpret', code: error.code || 'AI_ERROR' },
+          });
+        } catch { /* audit is best-effort */ }
+        throw error;
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
 
   // Purchase evaluation (§10): resolve + authorize tenant, validate request,
   // load only that tenant's offers + policy, evaluate with existing engine,
@@ -193,6 +254,67 @@ function createPurchaseRoutes({ vendorService, auditService, purchaseStore }) {
         data: purchase,
         meta: { requestId: req.requestId || req.get('x-request-id') || null },
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // AI-generated explanation of an existing deterministic decision. Read-only
+  // and advisory: it never changes policy, authorization, or stored records.
+  router.post('/purchases/:purchaseId/explain', async (req, res, next) => {
+    try {
+      if (!req.auth || !req.auth.tenantId) {
+        const err = new Error('Tenant context is required.');
+        err.statusCode = 400;
+        err.code = 'TENANT_CONTEXT_REQUIRED';
+        throw err;
+      }
+      const tenantId = req.auth.tenantId;
+      const actorId = req.auth.userId;
+      const requestId = req.requestId || req.id || randomUUID();
+      const purchase = await purchaseStore.getById({ tenantId, purchaseId: req.params.purchaseId });
+      if (!purchase) {
+        const notFound = new Error('Purchase record not found.');
+        notFound.statusCode = 404;
+        notFound.code = 'PURCHASE_NOT_FOUND';
+        throw notFound;
+      }
+
+      try {
+        const explanation = await aiService.explainDecision({ record: purchase });
+        try {
+          await auditService.recordEvent({
+            tenantId,
+            eventType: 'AI_EXPLANATION_GENERATED',
+            requestId,
+            actorId,
+            metadata: {
+              purchaseId: purchase.purchaseId,
+              decisionStatus: purchase.decision?.status || null,
+            },
+          });
+        } catch { /* audit is best-effort */ }
+        return res.status(200).json({
+          success: true,
+          data: {
+            purchaseId: purchase.purchaseId,
+            ...explanation,
+            paymentAuthorized: false,
+          },
+          meta: { requestId, advisoryOnly: true },
+        });
+      } catch (error) {
+        try {
+          await auditService.recordEvent({
+            tenantId,
+            eventType: 'AI_ASSISTANCE_FAILED',
+            requestId,
+            actorId,
+            metadata: { action: 'purchases:explain', purchaseId: purchase.purchaseId, code: error.code || 'AI_ERROR' },
+          });
+        } catch { /* audit is best-effort */ }
+        throw error;
+      }
     } catch (error) {
       next(error);
     }

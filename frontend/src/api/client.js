@@ -170,6 +170,20 @@ export async function listPurchases(status) {
   return apiFetch(`/purchases${q}`);
 }
 
+export async function getAiStatus() {
+  return apiFetch('/integrations/ai/status');
+}
+
+export async function interpretPurchaseRequest({ text, defaults }) {
+  return apiFetch('/purchases/interpret', { method: 'POST', body: { text, defaults } });
+}
+
+export async function explainPurchase(purchaseId) {
+  const id = String(purchaseId || '').trim();
+  if (!id) throw new Error('A stored purchase ID is required for an AI explanation.');
+  return apiFetch(`/purchases/${encodeURIComponent(id)}/explain`, { method: 'POST', body: {} });
+}
+
 export async function listAuditEvents() {
   const data = await apiFetch('/audit/events');
   return Array.isArray(data) ? data : [];

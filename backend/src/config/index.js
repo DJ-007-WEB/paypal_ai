@@ -220,6 +220,21 @@ function loadConfig(env = process.env) {
     }
   }
 
+  // --- Advisory AI (optional; disabled by default) ---
+  const AI_ENABLED = parseBool(env.AI_ENABLED, false);
+  const AI_API_KEY = env.AI_API_KEY ? String(env.AI_API_KEY).trim() : '';
+  const AI_BASE_URL = parseUrl(env.AI_BASE_URL || 'https://api.openai.com/v1', {
+    name: 'AI_BASE_URL', required: false, isProd,
+  });
+  const AI_MODEL = env.AI_MODEL ? String(env.AI_MODEL).trim() : '';
+  const AI_TIMEOUT_MS = parseIntBounded(env.AI_TIMEOUT_MS, { fallback: 10000, min: 1000, max: 30000, name: 'AI_TIMEOUT_MS' });
+  const AI_MAX_INPUT_CHARS = parseIntBounded(env.AI_MAX_INPUT_CHARS, { fallback: 4000, min: 100, max: 10000, name: 'AI_MAX_INPUT_CHARS' });
+  if (AI_ENABLED) {
+    if (!AI_API_KEY) throw new Error('AI_API_KEY is required when AI_ENABLED=true.');
+    if (!AI_BASE_URL) throw new Error('AI_BASE_URL is required when AI_ENABLED=true.');
+    if (!AI_MODEL) throw new Error('AI_MODEL is required when AI_ENABLED=true.');
+  }
+
   // --- Encryption ---
   const TOKEN_ENCRYPTION_KEY = env.TOKEN_ENCRYPTION_KEY ? String(env.TOKEN_ENCRYPTION_KEY).trim() : '';
   const KMS_KEY_ID = env.KMS_KEY_ID ? String(env.KMS_KEY_ID).trim() : '';
@@ -263,6 +278,7 @@ function loadConfig(env = process.env) {
     GOOGLE_OIDC_ENABLED, GOOGLE_OIDC_CLIENT_ID, GOOGLE_OIDC_REDIRECT_URI,
     GOOGLE_OIDC_ISSUER, GOOGLE_OIDC_SCOPES,
     GOOGLE_GMAIL_ENABLED, GOOGLE_GMAIL_CLIENT_ID, GOOGLE_GMAIL_REDIRECT_URI, GOOGLE_GMAIL_SCOPES,
+    AI_ENABLED, AI_API_KEY, AI_BASE_URL, AI_MODEL, AI_TIMEOUT_MS, AI_MAX_INPUT_CHARS,
     TOKEN_ENCRYPTION_KEY, KMS_KEY_ID,
     RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_REQUESTS,
     AUTH_RATE_LIMIT_MAX_REQUESTS, IMPORT_RATE_LIMIT_MAX_REQUESTS,
@@ -275,6 +291,7 @@ function loadConfig(env = process.env) {
     SESSION_SECRET: config.SESSION_SECRET,
     GOOGLE_OIDC_CLIENT_SECRET,
     GOOGLE_GMAIL_CLIENT_SECRET,
+    AI_API_KEY,
     TOKEN_ENCRYPTION_KEY: config.TOKEN_ENCRYPTION_KEY,
     MONGODB_URI: config.MONGODB_URI,
   };
@@ -305,6 +322,11 @@ function loadConfig(env = process.env) {
       GOOGLE_GMAIL_ENABLED: config.GOOGLE_GMAIL_ENABLED,
       GOOGLE_GMAIL_REDIRECT_URI: config.GOOGLE_GMAIL_REDIRECT_URI,
       GOOGLE_GMAIL_SCOPES_SET: Boolean(config.GOOGLE_GMAIL_SCOPES),
+      AI_ENABLED: config.AI_ENABLED,
+      AI_CONFIGURED: Boolean(config.AI_API_KEY && config.AI_BASE_URL && config.AI_MODEL),
+      AI_MODEL: config.AI_ENABLED ? config.AI_MODEL : null,
+      AI_TIMEOUT_MS: config.AI_TIMEOUT_MS,
+      AI_MAX_INPUT_CHARS: config.AI_MAX_INPUT_CHARS,
       KMS_CONFIGURED: Boolean(config.KMS_KEY_ID),
       TOKEN_ENCRYPTION_CONFIGURED: Boolean(config.TOKEN_ENCRYPTION_KEY || config.KMS_KEY_ID),
       RATE_LIMIT_WINDOW_MS: config.RATE_LIMIT_WINDOW_MS,
@@ -323,6 +345,7 @@ function loadConfig(env = process.env) {
     return {
       oidc: config.GOOGLE_OIDC_ENABLED ? 'enabled' : 'disabled',
       gmail: config.GOOGLE_GMAIL_ENABLED ? 'enabled' : 'disabled',
+      ai: config.AI_ENABLED ? 'enabled' : 'disabled',
       sessionStore: 'server-side',
       tokenEncryption: config.KMS_KEY_ID ? 'kms' : (config.TOKEN_ENCRYPTION_KEY ? 'local-key' : 'not-configured'),
     };

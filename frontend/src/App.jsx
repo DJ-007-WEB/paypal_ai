@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { evaluatePurchase, getBusinessEmailStatus, getCurrentWorkspace, getGmailStatus, getHealth, getMyWorkspaces, getPurchaseById, getSession, getVendors, listAuditEvents, listPurchases, listWorkspaceMembers, loginWithGoogle, logout as apiLogout, setSelectedTenantId, updateWorkspace } from './api/client.js';
+import { evaluatePurchase, explainPurchase, getAiStatus, getBusinessEmailStatus, getCurrentWorkspace, getGmailStatus, getHealth, getMyWorkspaces, getPurchaseById, getSession, getVendors, interpretPurchaseRequest, listAuditEvents, listPurchases, listWorkspaceMembers, loginWithGoogle, logout as apiLogout, setSelectedTenantId, updateWorkspace } from './api/client.js';
 import { Button, EmptyState, InlineAlert, LoadingState, Logo, PageHeader, StatusBadge, ThemeControl, formatMoney, go } from './components/ui.jsx';
-import { SUPPORTED_CURRENCIES, majorToMinor } from './currency.js';
+import { SUPPORTED_CURRENCIES, majorToMinor, minorToMajor } from './currency.js';
 import VendorImportWizard from './components/VendorImportWizard.jsx';
 
 const STORE = 'mandate.demo.workspace.v1';
@@ -413,6 +413,35 @@ function RequestConstraints({ request }) {
   );
 }
 
+function AiExplanation({ purchaseId }) {
+  const [state, setState] = useState({ busy: false, text: '', error: '' });
+  if (!purchaseId) return null;
+
+  async function generate() {
+    setState({ busy: true, text: '', error: '' });
+    try {
+      const data = await explainPurchase(purchaseId);
+      setState({ busy: false, text: data?.explanation || '', error: data?.explanation ? '' : 'The AI service returned no explanation.' });
+    } catch (err) {
+      setState({ busy: false, text: '', error: err.message || 'AI explanation is unavailable. The deterministic decision remains authoritative.' });
+    }
+  }
+
+  return (
+    <div className="result-findings" aria-live="polite">
+      <b>AI explanation · advisory only</b>
+      <p className="muted-note" style={{ marginTop: 6 }}>The deterministic decision and policy result are authoritative. AI cannot change constraints, approvals, or payment state.</p>
+      {state.text ? <p style={{ whiteSpace: 'pre-line' }}>{state.text}</p> : null}
+      {state.error ? <p className="muted-note" role="status">{state.error}</p> : null}
+      <div style={{ marginTop: 8 }}>
+        <Button type="button" variant="secondary" onClick={generate} disabled={state.busy}>
+          {state.busy ? 'Generating explanation…' : state.text ? 'Regenerate AI explanation' : 'Explain with AI'}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /* ================= Purchase desk ================= */
 function PurchaseDesk({ defaults }) {
   const [form, setForm] = useState(() => ({
@@ -431,8 +460,21 @@ function PurchaseDesk({ defaults }) {
   const [busy, setBusy] = useState(false);
   const [online, setOnline] = useState(null);
   const [filter, setFilter] = useState('all');
+  const [aiText, setAiText] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState('');
+  const [aiNotice, setAiNotice] = useState('');
+  const [aiIssues, setAiIssues] = useState([]);
+  const [aiStatus, setAiStatus] = useState(null);
   const vendorNames = useVendorNames();
   useEffect(() => { getHealth().then(() => setOnline(true)).catch(() => setOnline(false)); }, []);
+  useEffect(() => {
+    let alive = true;
+    getAiStatus()
+      .then((status) => { if (alive) setAiStatus(status); })
+      .catch(() => { /* Status is advisory; manual entry remains available. */ });
+    return () => { alive = false; };
+  }, []);
   const set = (key, value) => setForm((s) => ({ ...s, [key]: value }));
 
   function classifyError(message) {
@@ -441,6 +483,50 @@ function PurchaseDesk({ defaults }) {
     if (m.includes('invalid') || m.includes('validation')) return 'request-validation';
     if (m.includes('http 500') || m.includes('unexpected server')) return 'server-error';
     return 'unknown';
+  }
+
+  async function parseAiRequest() {
+    if (!aiText.trim()) { setAiError('Describe the purchase before requesting AI parsing.'); return; }
+    setAiBusy(true); setAiError(''); setAiNotice(''); setAiIssues([]);
+    try {
+      const data = await interpretPurchaseRequest({
+        text: aiText.trim(),
+        defaults: {
+          currency: form.currency,
+          maxDeliveryDays: Number(form.maxDeliveryDays),
+          minQualityScore: Number(form.minQualityScore),
+          minReliabilityScore: Number(form.minReliabilityScore),
+          requireApprovedVendor: form.requireApprovedVendor,
+        },
+      });
+      const request = data?.request || {};
+      setForm((current) => ({
+        ...current,
+        ...(request.productId ? { productId: request.productId } : {}),
+        ...(request.quantity != null ? { quantity: String(request.quantity) } : {}),
+        ...(request.currency ? { currency: request.currency } : {}),
+        ...(request.maxTotalMinor != null && request.currency ? { budget: String(minorToMajor(request.maxTotalMinor, request.currency)) } : {}),
+        ...(request.maxDeliveryDays != null ? { maxDeliveryDays: String(request.maxDeliveryDays) } : {}),
+        ...(request.minQualityScore != null ? { minQualityScore: String(request.minQualityScore) } : {}),
+        ...(request.minReliabilityScore != null ? { minReliabilityScore: String(request.minReliabilityScore) } : {}),
+        ...(typeof request.requireApprovedVendor === 'boolean' ? { requireApprovedVendor: request.requireApprovedVendor } : {}),
+      }));
+      setResult(null); setSubmitted(null); setOnline(true);
+      const issues = [
+        ...(data?.warnings || []),
+        ...((data?.errors || []).map((item) => item?.message).filter(Boolean)),
+      ];
+      setAiIssues(issues);
+      setAiNotice(data?.valid
+        ? 'AI parsed the request. Review the fields, then run the deterministic evaluation.'
+        : 'AI parsed a partial request. Review the missing or invalid fields before evaluating.');
+    } catch (err) {
+      const message = err.message || 'AI parsing is unavailable. Enter the purchase request manually.';
+      setAiError(message);
+      if (!/could not reach|failed to fetch|network/i.test(message)) setOnline(true);
+    } finally {
+      setAiBusy(false);
+    }
   }
 
   async function submit(e) {
@@ -473,6 +559,7 @@ function PurchaseDesk({ defaults }) {
   const rejected = result?.rejectedOffers || [];
   const visibleRanking = filter === 'eligible' ? ranking : filter === 'rejected' ? [] : ranking;
   const visibleRejected = filter === 'all' || filter === 'rejected' ? rejected : [];
+  const aiDisabled = aiStatus?.enabled === false;
 
   return (
     <div className="page-stack">
@@ -491,6 +578,45 @@ function PurchaseDesk({ defaults }) {
         <section className="surface" aria-label="Purchase request">
           <div className="surface-head"><div><span className="step-kicker">Step 01 · Request</span><h2>Define purchase request</h2><p>Set your constraints before comparing offers.</p></div></div>
           <form onSubmit={submit} className="purchase-form" noValidate>
+            <div className="notice-box">
+              <span className="step-kicker">Optional · AI parsing</span>
+              <b>Describe the purchase in your own words</b>
+              <p className="muted-note" style={{ marginTop: 4 }}>AI extracts fields into the form below. The deterministic engine still validates every constraint, and AI never approves a purchase or authorizes payment.</p>
+              <label className="field" style={{ marginTop: 10 }}>
+                <span className="field-label">Natural-language request</span>
+                <textarea
+                  rows={3}
+                  value={aiText}
+                  onChange={(e) => setAiText(e.target.value)}
+                  placeholder="e.g. Buy 40 units of BRG-6204 under ₹20,000 total, delivered within 5 days, quality and reliability at least 70."
+                  maxLength={4000}
+                />
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+                <Button type="button" variant="secondary" onClick={parseAiRequest} disabled={aiBusy || !aiText.trim() || aiDisabled}>
+                  {aiBusy ? 'Parsing request…' : 'Parse with AI'}
+                </Button>
+                <span className="muted-note">
+                  {aiDisabled
+                    ? 'AI parsing is not available in this environment. Enter the request manually below.'
+                    : aiStatus?.enabled
+                      ? `${aiStatus.model || 'Configured model'} · advisory parsing only`
+                      : 'AI fills the fields below; evaluation remains deterministic.'}
+                </span>
+              </div>
+              {aiError ? <div className="form-error" role="alert" style={{ marginTop: 10 }}>{aiError}</div> : null}
+              {aiNotice ? (
+                <div style={{ marginTop: 10 }}>
+                  <b style={{ fontSize: 13 }}>{aiNotice}</b>
+                  {aiIssues.length ? (
+                    <ul className="muted-note" style={{ margin: '6px 0 0 18px' }}>
+                      {aiIssues.map((issue, i) => <li key={i}>{issue}</li>)}
+                    </ul>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+            <div className="form-divider">Or enter structured fields</div>
             <div><span className="field-label">Product and quantity</span></div>
             <label>Product / SKU<input value={form.productId} onChange={(e) => set('productId', e.target.value)} required placeholder="e.g. BRG-6204" /></label>
             <div className="field-pair">
@@ -582,7 +708,9 @@ function PurchaseDesk({ defaults }) {
               ) : filter === 'rejected' ? <p className="muted-note">No offers were rejected for this request.</p> : null}
             </div>
           )}
-          <div className="safety-note"><b>AI recommends. Your team authorizes.</b><p>Payment execution remains disabled in this prototype. Approval actions are not connected.</p></div>
+          <AiExplanation purchaseId={result?.purchaseId} />
+
+              <div className="safety-note"><b>AI recommends. Your team authorizes.</b><p>Payment execution remains disabled in this prototype. Approval actions are not connected.</p></div>
         </section>
       </div>
       <div className="two-panel">
@@ -808,6 +936,8 @@ function HistoryPage() {
   const [id, setId] = useState('');
   const [lookupError, setLookupError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [aiExplainId, setAiExplainId] = useState(null);
+  const [aiExplainResult, setAiExplainResult] = useState({ busy: false, text: '', error: '' });
 
   useEffect(() => {
     let alive = true;
@@ -826,6 +956,21 @@ function HistoryPage() {
       const data = await getPurchaseById(id);
       setSelected(data);
     } catch (err) { setLookupError(err.message); } finally { setBusy(false); }
+  }
+
+  async function aiExplainRecord(e) {
+    e?.preventDefault();
+    setAiExplainId(null); setAiExplainResult({ busy: false, text: '', error: '' });
+    if (!id.trim()) { setAiExplainResult({ busy: false, error: 'No purchase ID.' }); return; }
+    setAiExplainResult({ busy: true, text: '', error: '' });
+    try {
+      const data = await explainPurchase(id);
+      setAiExplainResult({ busy: false, text: data?.explanation || '', error: data?.explanation ? '' : 'The AI service returned no explanation.' });
+      setAiExplainId(id);
+    } catch (err) {
+      setAiExplainResult({ busy: false, error: err.message || 'AI explanation is unavailable.' });
+      setAiExplainId(null);
+    }
   }
 
   return (
@@ -869,7 +1014,7 @@ function HistoryPage() {
                     <td><StatusBadge tone={decisionTone(record.decision?.status)}>{record.decision?.status || 'Unknown'}</StatusBadge></td>
                     <td>{record.policy?.passed ? <StatusBadge tone="ok">Passed</StatusBadge> : <StatusBadge tone="error">Blocked</StatusBadge>}</td>
                     <td className="num">{record.recommendation ? formatMoney(record.recommendation.totalMinor, record.recommendation.currency) : '—'}<small className="cell-sub">{record.recommendation ? vendorLabel(vendorNames, record.recommendation.offerId, record.recommendation.vendorId) : 'No recommendation'}</small></td>
-                    <td><button className="inline-link" onClick={() => setSelected(record)}>View →</button></td>
+                    <td><button className="inline-link" onClick={() => setSelected(record)}>View →</button>{record.aiExplain ? ` · ${record.aiExplain}` : ''}</td>
                   </tr>
                 ))}
               </tbody>
@@ -882,6 +1027,25 @@ function HistoryPage() {
         <section className="surface">
           <div className="surface-head"><div><span className="step-kicker">Stored decision record</span><h2>Purchase detail</h2><p>Read back from the tenant-scoped purchase store.</p></div><button className="text-button" onClick={() => setSelected(null)}>Close</button></div>
           <PurchaseRecordDetail record={selected} vendorNames={vendorNames} />
+          <div className="result-findings" style={{ marginTop: 12, whiteSpace: 'pre-wrap' }}>
+            <b>AI explanation · advisory only</b>
+            <p className="muted-note" style={{ marginTop: 6 }}>The deterministic decision and policy result are authoritative. AI cannot change constraints, approvals, or payment state.</p>
+            {aiExplainResult.busy ? <p>Generating explanation…</p> : null}
+            <p style={{ whiteSpace: 'pre-line' }}>{aiExplainResult.text}</p>
+            {aiExplainResult.error ? <p className="muted-note" role="status">{aiExplainResult.error}</p> : null}
+            <div style={{ marginTop: 8, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+              <Button type="button" variant="secondary" onClick={() => aiExplainRecord(e)} disabled={aiExplainResult.busy}>
+                {aiExplainResult.busy ? 'Generating…' : aiExplainResult.error ? 'Explain failed' : 'Explain with AI'}
+              </Button>
+              <span className="muted-note">
+                {aiExplainResult.error
+                  ? 'AI cannot override constraints or approvals.'
+                  : aiStatus?.enabled
+                    ? 'AI advisory only; engine and policy remain authoritative.'
+                    : 'Explanation available only after evaluating a purchase.'}
+              </span>
+            </div>
+          </div>
         </section>
       ) : null}
 

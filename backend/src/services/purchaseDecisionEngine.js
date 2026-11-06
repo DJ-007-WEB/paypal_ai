@@ -273,4 +273,10 @@ function invalidRequest(errors) {
     errors, };
 }
 
-module.exports = { evaluatePurchaseRequest, formatMoney, ENGINE_VERSION, SUPPORTED_CURRENCIES: Object.keys(CURRENCY_EXPONENT) };
+module.exports = {
+  evaluatePurchaseRequest,
+  formatMoney,
+  ENGINE_VERSION,
+  SUPPORTED_CURRENCIES: Object.keys(CURRENCY_EXPONENT),
+  CURRENCY_EXPONENTS: CURRENCY_EXPONENT,
+};
