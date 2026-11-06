@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { evaluatePurchase, getBusinessEmailStatus, getCurrentWorkspace, getGmailStatus, getHealth, getMyWorkspaces, getPurchaseById, getSession, getVendors, listAuditEvents, listPurchases, listWorkspaceMembers, loginWithGoogle, logout as apiLogout, setSelectedTenantId, updateWorkspace } from './api/client.js';
 import { Button, EmptyState, InlineAlert, LoadingState, Logo, PageHeader, StatusBadge, ThemeControl, formatMoney, go } from './components/ui.jsx';
+import { SUPPORTED_CURRENCIES, majorToMinor } from './currency.js';
 import VendorImportWizard from './components/VendorImportWizard.jsx';
 
 const STORE = 'mandate.demo.workspace.v1';
@@ -329,6 +330,89 @@ function Onboarding({ user, onComplete }) {
   );
 }
 
+/* ================= Purchase result rendering ================= */
+function useVendorNames() {
+  const [names, setNames] = useState(() => new Map());
+  useEffect(() => {
+    let alive = true;
+    getVendors()
+      .then((offers) => {
+        if (!alive) return;
+        const next = new Map();
+        (Array.isArray(offers) ? offers : []).forEach((offer) => {
+          if (offer?.offerId) next.set(offer.offerId, offer.vendorName || offer.vendorId || offer.offerId);
+        });
+        setNames(next);
+      })
+      .catch(() => { /* Names are optional display metadata; IDs remain visible. */ });
+    return () => { alive = false; };
+  }, []);
+  return names;
+}
+
+function vendorLabel(names, offerId, fallback) {
+  return names.get(offerId) || fallback || offerId || 'Unknown supplier';
+}
+
+function RankingTable({ ranking = [], recommendedOfferId, vendorNames, currency }) {
+  return (
+    <div className="offer-table-wrap">
+      <table className="data-table">
+        <thead><tr><th>#</th><th>Supplier / offer</th><th>Total</th><th>Delivery</th><th>Quality · Reliability</th></tr></thead>
+        <tbody>
+          {ranking.map((row) => (
+            <tr key={row.offerId} style={recommendedOfferId === row.offerId ? { background: 'var(--primary-soft)' } : undefined}>
+              <td className="num">{row.rank}{row.tied ? ' = ' : ''}</td>
+              <td>
+                <b>{vendorLabel(vendorNames, row.offerId, row.vendorId)}</b>
+                {recommendedOfferId === row.offerId ? <StatusBadge tone="info">Recommended</StatusBadge> : null}
+                <small className="cell-sub"><code>{row.offerId}</code> · supplier <code>{row.vendorId}</code></small>
+              </td>
+              <td className="num">{formatMoney(row.cost?.totalMinor, row.cost?.currency || currency)}<small className="cell-sub">unit {formatMoney(row.cost?.unitPriceMinor, row.cost?.currency || currency)}</small></td>
+              <td className="num">{row.criteria?.deliveryDays ?? '—'}d</td>
+              <td className="num">{row.criteria?.qualityScore ?? '—'} · {row.criteria?.reliabilityScore ?? '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RejectedOffersTable({ offers = [], vendorNames }) {
+  return (
+    <div className="offer-table-wrap">
+      <table className="data-table">
+        <thead><tr><th>Rejected offer</th><th>Reason (from engine)</th></tr></thead>
+        <tbody>
+          {offers.map((offer, i) => (
+            <tr key={`${offer.offerId}-${i}`}>
+              <td>
+                <b>{vendorLabel(vendorNames, offer.offerId, offer.vendorId)}</b>
+                <small className="cell-sub"><code>{offer.offerId}</code> · supplier <code>{offer.vendorId}</code></small>
+              </td>
+              <td>{(offer.reasons || []).map((reason, j) => <div key={j}><code>{reason.code}</code> — {reason.message}</div>)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RequestConstraints({ request }) {
+  if (!request) return null;
+  return (
+    <div className="compact-facts">
+      <span>Budget ceiling<b>{request.maxTotalMinor == null ? 'Not set' : formatMoney(request.maxTotalMinor, request.currency)}</b></span>
+      <span>Delivery limit<b>{request.maxDeliveryDays == null ? 'Not set' : `≤ ${request.maxDeliveryDays} days`}</b></span>
+      <span>Minimum quality<b>{request.minQualityScore == null ? 'No minimum' : `${request.minQualityScore}/100`}</b></span>
+      <span>Minimum reliability<b>{request.minReliabilityScore == null ? 'No minimum' : `${request.minReliabilityScore}/100`}</b></span>
+      <span>Supplier rule<b>{request.requireApprovedVendor ? 'Approved vendors only' : 'Approved vendors optional'}</b></span>
+    </div>
+  );
+}
+
 /* ================= Purchase desk ================= */
 function PurchaseDesk({ defaults }) {
   const [form, setForm] = useState(() => ({
@@ -341,11 +425,13 @@ function PurchaseDesk({ defaults }) {
     requireApprovedVendor: defaults?.approvedOnly ?? initialPurchase.requireApprovedVendor,
   }));
   const [result, setResult] = useState(null);
+  const [submitted, setSubmitted] = useState(null);
   const [error, setError] = useState('');
   const [errorKind, setErrorKind] = useState('');
   const [busy, setBusy] = useState(false);
   const [online, setOnline] = useState(null);
   const [filter, setFilter] = useState('all');
+  const vendorNames = useVendorNames();
   useEffect(() => { getHealth().then(() => setOnline(true)).catch(() => setOnline(false)); }, []);
   const set = (key, value) => setForm((s) => ({ ...s, [key]: value }));
 
@@ -358,23 +444,25 @@ function PurchaseDesk({ defaults }) {
   }
 
   async function submit(e) {
-    e.preventDefault(); setBusy(true); setError(''); setErrorKind(''); setResult(null);
+    e.preventDefault(); setBusy(true); setError(''); setErrorKind(''); setResult(null); setSubmitted(null);
     const qty = Number(form.quantity);
     const budgetNum = Number(form.budget);
     if (!form.productId.trim()) { setError('Enter a product / SKU before evaluating.'); setErrorKind('request-validation'); setBusy(false); return; }
     if (!Number.isInteger(qty) || qty <= 0) { setError('Quantity must be a whole number greater than zero.'); setErrorKind('request-validation'); setBusy(false); return; }
     if (!Number.isFinite(budgetNum) || budgetNum <= 0) { setError('Maximum budget must be a number greater than zero.'); setErrorKind('request-validation'); setBusy(false); return; }
+    const request = {
+      productId: form.productId.trim(), quantity: qty, maxTotalMinor: majorToMinor(budgetNum, form.currency),
+      currency: form.currency, maxDeliveryDays: Number(form.maxDeliveryDays),
+      minQualityScore: Number(form.minQualityScore), minReliabilityScore: Number(form.minReliabilityScore),
+      requireApprovedVendor: form.requireApprovedVendor,
+    };
     try {
-      const data = await evaluatePurchase({
-        productId: form.productId.trim(), quantity: qty, maxTotalMinor: Math.round(budgetNum * 100),
-        currency: form.currency, maxDeliveryDays: Number(form.maxDeliveryDays),
-        minQualityScore: Number(form.minQualityScore), minReliabilityScore: Number(form.minReliabilityScore),
-        requireApprovedVendor: form.requireApprovedVendor,
-      });
-      setResult(data); setOnline(true);
+      const data = await evaluatePurchase(request);
+      setResult(data); setSubmitted(request); setOnline(true);
     } catch (err) {
       const msg = err.message || 'Could not evaluate purchase.';
-      setError(msg); setErrorKind(classifyError(msg)); setOnline(false);
+      const kind = classifyError(msg);
+      setError(msg); setErrorKind(kind); setOnline(kind !== 'api-unreachable');
     } finally { setBusy(false); }
   }
 
@@ -412,7 +500,7 @@ function PurchaseDesk({ defaults }) {
             <div><span className="field-label">Budget and delivery</span></div>
             <div className="field-pair">
               <label>Delivery within (days)<input type="number" min="0" max="365" value={form.maxDeliveryDays} onChange={(e) => set('maxDeliveryDays', e.target.value)} required /></label>
-              <label>Currency<select value={form.currency} onChange={(e) => set('currency', e.target.value)}>{['INR', 'USD', 'EUR', 'GBP'].map((c) => <option key={c}>{c}</option>)}</select></label>
+              <label>Currency<select value={form.currency} onChange={(e) => set('currency', e.target.value)}>{SUPPORTED_CURRENCIES.map((c) => <option key={c}>{c}</option>)}</select></label>
             </div>
             <div className="form-divider">Quality &amp; compliance</div>
             <div className="field-pair">
@@ -448,13 +536,15 @@ function PurchaseDesk({ defaults }) {
                 <p>{result.explanation}</p>
               </div>
 
+              <RequestConstraints request={submitted} />
+
               <div className="recommended-offer">
                 <span className="step-kicker">Recommendation · not approval</span>
                 {result.recommendation ? (
                   <>
-                    <h3>{result.recommendation.vendorId}</h3>
-                    <p>Offer <code>{result.recommendation.offerId}</code> · Score {result.recommendation.score} · {(result.recommendation.rationale || []).join(' ')}</p>
-                    <div><span>Estimated total (incl. shipping, tax, fees)</span><b>{formatMoney(result.recommendation.totalMinor, result.recommendation.currency || form.currency)}</b></div>
+                    <h3>{vendorLabel(vendorNames, result.recommendation.offerId, result.recommendation.vendorId)}</h3>
+                    <p>Offer <code>{result.recommendation.offerId}</code> · Supplier <code>{result.recommendation.vendorId}</code> · Score {result.recommendation.score} · {(result.recommendation.rationale || []).join(' ')}</p>
+                    <div><span>Estimated total (incl. shipping, tax, fees)</span><b>{formatMoney(result.recommendation.totalMinor, result.recommendation.currency || submitted?.currency)}</b></div>
                   </>
                 ) : (
                   <>
@@ -485,35 +575,11 @@ function PurchaseDesk({ defaults }) {
                 ))}
               </div>
               {visibleRanking.length ? (
-                <div className="offer-table-wrap">
-                  <table className="data-table">
-                    <thead><tr><th>#</th><th>Supplier / offer</th><th>Total</th><th>Delivery</th><th>Quality · Reliability</th></tr></thead>
-                    <tbody>
-                      {visibleRanking.map((row) => (
-                        <tr key={row.offerId} style={result.recommendation?.offerId === row.offerId ? { background: 'var(--primary-soft)' } : undefined}>
-                          <td className="num">{row.rank}{row.tied ? ' = ' : ''}</td>
-                          <td><b>{row.vendorId}</b> {result.recommendation?.offerId === row.offerId ? <StatusBadge tone="info">Recommended</StatusBadge> : null}<small className="cell-sub"><code>{row.offerId}</code></small></td>
-                          <td className="num">{formatMoney(row.cost?.totalMinor, row.cost?.currency || form.currency)}<small className="cell-sub">unit {formatMoney(row.cost?.unitPriceMinor, row.cost?.currency || form.currency)}</small></td>
-                          <td className="num">{row.criteria?.deliveryDays ?? '—'}d</td>
-                          <td className="num">{row.criteria?.qualityScore ?? '—'} · {row.criteria?.reliabilityScore ?? '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : <p className="muted-note">No eligible offers for this filter.</p>}
+                <RankingTable ranking={visibleRanking} recommendedOfferId={result.recommendation?.offerId} vendorNames={vendorNames} currency={submitted?.currency} />
+              ) : filter !== 'rejected' ? <p className="muted-note">No eligible offers for this filter.</p> : null}
               {visibleRejected.length ? (
-                <div className="offer-table-wrap" style={{ marginTop: 12 }}>
-                  <table className="data-table">
-                    <thead><tr><th>Rejected offer</th><th>Reason (from engine)</th></tr></thead>
-                    <tbody>
-                      {visibleRejected.map((r, i) => (
-                        <tr key={`${r.offerId}-${i}`}><td><code>{r.offerId}</code><small className="cell-sub">{r.vendorId}</small></td><td>{(r.reasons || []).map((x, j) => <div key={j}><code>{x.code}</code> — {x.message}</div>)}</td></tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : null}
+                <div style={{ marginTop: 12 }}><RejectedOffersTable offers={visibleRejected} vendorNames={vendorNames} /></div>
+              ) : filter === 'rejected' ? <p className="muted-note">No offers were rejected for this request.</p> : null}
             </div>
           )}
           <div className="safety-note"><b>AI recommends. Your team authorizes.</b><p>Payment execution remains disabled in this prototype. Approval actions are not connected.</p></div>
@@ -704,8 +770,10 @@ function decisionTone(status) {
   return 'warn';
 }
 
-function PurchaseRecordDetail({ record }) {
+function PurchaseRecordDetail({ record, vendorNames }) {
   if (!record) return null;
+  const ranking = record.ranking || [];
+  const rejectedOffers = record.rejectedOffers || [];
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -717,9 +785,12 @@ function PurchaseRecordDetail({ record }) {
         <li><span>Purchase ID</span><b><code>{record.purchaseId}</code></b></li>
         <li><span>Created</span><b>{formatDateTime(record.createdAt)}</b></li>
         <li><span>Product · Qty</span><b>{record.request?.productId} · {record.request?.quantity}</b></li>
-        <li><span>Recommendation</span><b>{record.recommendation ? `${record.recommendation.vendorId} (${record.recommendation.offerId}) · ${formatMoney(record.recommendation.totalMinor, record.recommendation.currency)}` : 'None'}</b></li>
+        <li><span>Recommendation</span><b>{record.recommendation ? `${vendorLabel(vendorNames, record.recommendation.offerId, record.recommendation.vendorId)} (${record.recommendation.offerId}) · ${formatMoney(record.recommendation.totalMinor, record.recommendation.currency)}` : 'None'}</b></li>
         <li><span>Explanation</span><b style={{ fontWeight: 400 }}>{record.explanation}</b></li>
       </ul>
+      <RequestConstraints request={record.request} />
+      {ranking.length ? <div><h3 style={{ fontSize: 15 }}>Offer comparison</h3><RankingTable ranking={ranking} recommendedOfferId={record.decision?.recommendedOfferId} vendorNames={vendorNames} currency={record.request?.currency} /></div> : null}
+      {rejectedOffers.length ? <div><h3 style={{ fontSize: 15 }}>Rejection reasons ({rejectedOffers.length})</h3><RejectedOffersTable offers={rejectedOffers} vendorNames={vendorNames} /></div> : null}
       {(record.policy?.violations || []).length ? <div className="result-findings"><b>Policy findings</b>{record.policy.violations.map((v, i) => <p key={i}><code>{v.code}</code> — {v.message}</p>)}</div> : null}
       {(record.auditEvents || []).length ? <div><h3 style={{ fontSize: 15 }}>Audit events ({record.auditEvents.length})</h3>{record.auditEvents.map((ev, i) => <div className="audit-event" key={ev.eventId || i}><i aria-hidden="true" /><span><b>{String(ev.eventType || '').replaceAll('_', ' ')}</b><small>{formatDateTime(ev.timestamp)}</small></span></div>)}</div> : null}
     </div>
@@ -727,6 +798,7 @@ function PurchaseRecordDetail({ record }) {
 }
 
 function HistoryPage() {
+  const vendorNames = useVendorNames();
   const [status, setStatus] = useState('');
   const [records, setRecords] = useState(null);
   const [listError, setListError] = useState('');
@@ -761,7 +833,7 @@ function HistoryPage() {
       <PageHeader
         eyebrow="Purchasing activity"
         title="Purchase history"
-        description="Every evaluation in this workspace, newest first, read from GET /api/purchases. Open a record to inspect its decision, policy outcome, and audit events."
+        description="Every evaluation in this workspace, newest first, read from GET /api/purchases. Open a record to inspect its request constraints, offer comparison, rejection reasons, policy outcome, and audit events."
         actions={<Button onClick={() => go('/app/purchases/new')}>New purchase request <span aria-hidden="true">→</span></Button>}
       />
       <section className="surface">
@@ -796,7 +868,7 @@ function HistoryPage() {
                     <td><b>{record.request?.productId}</b><small className="cell-sub">Qty {record.request?.quantity} · {record.request?.currency}</small></td>
                     <td><StatusBadge tone={decisionTone(record.decision?.status)}>{record.decision?.status || 'Unknown'}</StatusBadge></td>
                     <td>{record.policy?.passed ? <StatusBadge tone="ok">Passed</StatusBadge> : <StatusBadge tone="error">Blocked</StatusBadge>}</td>
-                    <td className="num">{record.recommendation ? formatMoney(record.recommendation.totalMinor, record.recommendation.currency) : '—'}<small className="cell-sub">{record.recommendation?.vendorId || 'No recommendation'}</small></td>
+                    <td className="num">{record.recommendation ? formatMoney(record.recommendation.totalMinor, record.recommendation.currency) : '—'}<small className="cell-sub">{record.recommendation ? vendorLabel(vendorNames, record.recommendation.offerId, record.recommendation.vendorId) : 'No recommendation'}</small></td>
                     <td><button className="inline-link" onClick={() => setSelected(record)}>View →</button></td>
                   </tr>
                 ))}
@@ -809,7 +881,7 @@ function HistoryPage() {
       {selected ? (
         <section className="surface">
           <div className="surface-head"><div><span className="step-kicker">Stored decision record</span><h2>Purchase detail</h2><p>Read back from the tenant-scoped purchase store.</p></div><button className="text-button" onClick={() => setSelected(null)}>Close</button></div>
-          <PurchaseRecordDetail record={selected} />
+          <PurchaseRecordDetail record={selected} vendorNames={vendorNames} />
         </section>
       ) : null}
 
@@ -830,7 +902,7 @@ function HistoryPage() {
 /* ================= Policies ================= */
 function PoliciesPage({ profile }) {
   const rows = [
-    ['Budget default', profile?.defaultBudget ? formatMoney(Number(profile.defaultBudget) * 100, profile.currency) : 'No default budget', 'Workspace preference', 'Prefills the purchase form in this browser.'],
+    ['Budget default', profile?.defaultBudget ? formatMoney(majorToMinor(profile.defaultBudget, profile.currency), profile.currency) : 'No default budget', 'Workspace preference', 'Prefills the purchase form in this browser.'],
     ['Approved vendors only', profile?.approvedOnly ? 'On' : 'Off', 'Request default', 'Sent with each evaluation when enabled.'],
     ['Delivery deadline', `${profile?.deadline || 5} days`, 'Request default', 'Sent with each evaluation.'],
     ['Minimum quality', `${profile?.quality || 70}/100`, 'Request default', 'Sent with each evaluation.'],

@@ -1,20 +1,20 @@
 import React from 'react';
+import { currencyExponent, minorToMajor } from '../currency.js';
 
 export function formatMoney(minor, currency = 'INR') {
   const value = Number(minor || 0);
+  const code = String(currency || 'INR').toUpperCase();
+  const exponent = currencyExponent(code);
   try {
-    const locale = currency === 'INR' ? 'en-IN' : 'en-US';
-    // JPY and other zero-decimal currencies still arrive as minor units per backend contract.
-    // Intl handles the display; value is divided by 100 for 2-decimal currencies.
-    const zeroDecimal = ['JPY', 'KRW', 'VND', 'CLP'].includes(String(currency).toUpperCase());
-    const amount = zeroDecimal ? value : value / 100;
+    const locale = code === 'INR' ? 'en-IN' : 'en-US';
     return new Intl.NumberFormat(locale, {
       style: 'currency',
-      currency,
-      maximumFractionDigits: zeroDecimal ? 0 : 2,
-    }).format(amount);
+      currency: code,
+      minimumFractionDigits: exponent,
+      maximumFractionDigits: exponent,
+    }).format(minorToMajor(value, code));
   } catch {
-    return `${currency} ${(value / 100).toFixed(2)}`;
+    return `${code} ${minorToMajor(value, code).toFixed(exponent)}`;
   }
 }
 

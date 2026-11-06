@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { importVendors } from '../api/client.js';
+import { SUPPORTED_CURRENCIES, majorToMinor, minorToMajor } from '../currency.js';
 import { Button, InlineAlert, StatusBadge } from './ui.jsx';
 
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -11,7 +12,7 @@ export const FIELD_DEFS = [
   { key: 'vendorId', label: 'Vendor ID', required: true, group: 'Supplier identity' },
   { key: 'productId', label: 'Product / SKU', required: true, group: 'Offer identity' },
   { key: 'currency', label: 'Currency (e.g. INR)', required: true, group: 'Pricing' },
-  { key: 'unitPrice', label: 'Unit price', required: true, group: 'Pricing', money: true, hint: 'Major units (125.50) unless the column header contains “minor”.' },
+  { key: 'unitPrice', label: 'Unit price', required: true, group: 'Pricing', money: true, hint: 'Major units (125.50) unless the column header contains “minor”. Converted using each row’s currency exponent.' },
   { key: 'quantity', label: 'Available quantity', required: true, group: 'Availability' },
   { key: 'deliveryDays', label: 'Delivery days', required: true, group: 'Availability' },
   { key: 'shipping', label: 'Shipping charge', required: true, group: 'Pricing', money: true },
@@ -23,8 +24,6 @@ export const FIELD_DEFS = [
   { key: 'email', label: 'Contact email', required: false, group: 'Optional' },
   { key: 'website', label: 'Website', required: false, group: 'Optional' },
 ];
-
-const SUPPORTED_CURRENCIES = ['INR','USD','EUR','GBP','AUD','CAD','CHF','CNY','SGD','NZD','HKD','AED','SAR','BRL','MXN','ZAR','JPY','KRW','VND','CLP','BHD','KWD','OMR','JOD','TND'];
 
 const APPROVED_TRUE = new Set(['true','yes','y','approved','active','1']);
 const APPROVED_FALSE = new Set(['false','no','n','unapproved','inactive','0','rejected']);
@@ -60,7 +59,7 @@ function isMinorHeader(headerName) {
   return String(headerName || '').toLowerCase().includes('minor');
 }
 
-function parseMoneyCell(raw, headerName) {
+function parseMoneyCell(raw, headerName, currency) {
   const text = String(raw ?? '').trim();
   if (text === '') return { empty: true, value: NaN, minor: false };
   const minor = isMinorHeader(headerName);
@@ -73,7 +72,7 @@ function parseMoneyCell(raw, headerName) {
   const n = Number(cleaned);
   if (!Number.isFinite(n)) return { empty: false, value: NaN, minor: false, invalid: true };
   if (n < 0) return { empty: false, value: n, minor: false, invalid: true };
-  return { empty: false, value: n, minor: false, invalid: false, minorValue: Math.round(n * 100) };
+  return { empty: false, value: n, minor: false, invalid: false, minorValue: majorToMinor(n, currency) };
 }
 
 function validateRow(r) {
@@ -197,10 +196,10 @@ export default function VendorImportWizard({ onImported, onStateChange, showHead
     const productId = String(cell('productId')).trim();
     const currency = String(cell('currency')).trim().toUpperCase();
 
-    const unitP = parseMoneyCell(cell('unitPrice'), mapping.unitPrice);
-    const shipP = parseMoneyCell(cell('shipping'), mapping.shipping);
-    const taxP = parseMoneyCell(cell('tax'), mapping.tax);
-    const feesP = parseMoneyCell(cell('fees'), mapping.fees);
+    const unitP = parseMoneyCell(cell('unitPrice'), mapping.unitPrice, currency);
+    const shipP = parseMoneyCell(cell('shipping'), mapping.shipping, currency);
+    const taxP = parseMoneyCell(cell('tax'), mapping.tax, currency);
+    const feesP = parseMoneyCell(cell('fees'), mapping.fees, currency);
 
     const qRaw = String(cell('quantity') ?? '').trim();
     const dRaw = String(cell('deliveryDays') ?? '').trim();
@@ -221,7 +220,7 @@ export default function VendorImportWizard({ onImported, onStateChange, showHead
       unitPriceRaw: String(cell('unitPrice') ?? ''),
       unitPriceEmpty: unitP.empty,
       unitPriceInvalid: unitP.invalid,
-      unitPriceMajor: unitP.minor ? unitP.value / 100 : unitP.value,
+      unitPriceMajor: unitP.minor ? minorToMajor(unitP.value, currency) : unitP.value,
       unitPriceMinor: unitP.minor ? unitP.value : unitP.minorValue,
       unitPriceIsMinor: unitP.minor,
       quantity: qNum,
@@ -387,7 +386,7 @@ export default function VendorImportWizard({ onImported, onStateChange, showHead
             <div><h3>Map your columns</h3><p>{headers.length} columns detected. Required fields are marked. Choose “Not mapped” to leave an optional field empty.</p></div>
             <StatusBadge tone={missingFields.length ? 'warn' : 'ok'}>{missingFields.length ? `${missingFields.length} required unmapped` : 'All required fields mapped'}</StatusBadge>
           </div>
-          <p className="mapping-help">Monetary spreadsheet values are interpreted as <b>major currency units</b> and converted once to minor units (for example, 125.50 → 12550 paise) — <b>unless</b> the mapped column header contains “minor” (e.g. <code>unitPriceMinor</code>), in which case the value is sent unchanged. Charges must be explicit: leave nothing blank to mean zero — enter <code>0</code>.</p>
+          <p className="mapping-help">Monetary spreadsheet values are interpreted as <b>major currency units</b> and converted once to minor units using each row’s currency (for example, 125.50 INR → 12550 paise, 125 JPY → 125 yen) — <b>unless</b> the mapped column header contains “minor” (e.g. <code>unitPriceMinor</code>), in which case the value is sent unchanged. Charges must be explicit: leave nothing blank to mean zero — enter <code>0</code>.</p>
           <div className="mapping-grid">
             {FIELD_DEFS.map((f) => (
               <label key={f.key} className="field">
