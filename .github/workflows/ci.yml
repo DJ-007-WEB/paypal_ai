@@ -1,0 +1,96 @@
+name: Mandate CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+  backend-test:
+    name: Backend API Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20]
+    env:
+      NODE_ENV: test
+      MONGODB_URI: 'mongodb://localhost:27017/mandate'
+      MONGODB_DB_NAME: mandate
+      SESSION_SECRET: test-secret-change-me
+      GOOGLE_OIDC_ENABLED: 'false'
+      GOOGLE_OIDC_CLIENT_ID: test
+      GOOGLE_OIDC_CLIENT_SECRET: test
+      GOOGLE_OIDC_REDIRECT_URI: http://localhost:3000/api/auth/google/callback
+      GOOGLE_OIDC_ISSUER: https://accounts.google.com
+      PAYPAL_ENV: sandbox
+      PAYPAL_CLIENT_ID: test
+      PAYPAL_CLIENT_SECRET: test
+      FRONTEND_ORIGIN: http://localhost:5173
+      APP_BASE_URL: http://localhost:3000
+      FRONTEND_BASE_URL: http://localhost:5173
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache Node modules (backend)
+        uses: actions/cache@v4
+        with:
+          path: |
+            backend/node_modules
+            backend/.cache
+          key: backend-modules-${{ runner.os }}-${{ hashFiles('backend/package-lock.json') }}
+          restore-keys: |
+            backend-modules-${{ runner.os }}-
+
+      - name: Setup Node.js (backend)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run backend test suite
+        working-directory: backend
+        run: npm test
+        timeout-minutes: 10
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20]
+    env:
+      VITE_API_BASE_URL: 'http://localhost:3000/api'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache Node modules (frontend)
+        uses: actions/cache@v4
+        with:
+          path: |
+            frontend/node_modules
+            frontend/.vite
+          key: frontend-modules-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: |
+            frontend-modules-${{ runner.os }}-
+
+      - name: Setup Node.js (frontend)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend build
+        working-directory: frontend
+        run: npm run build
+        timeout-minutes: 5
