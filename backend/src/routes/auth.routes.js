@@ -11,6 +11,7 @@ const crypto = require('node:crypto');
  * - Google `sub` is the stable identity key; email must be verified.
  * - Session rotation after login; allowlisted frontend redirects only.
  * - No fake-auth fallback; disabled integration fails closed.
+ * - Auto-create workspace on first Google sign-in.
  */
 
 function base64url(buf) {
@@ -191,6 +192,8 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, oid
       // Rotate application session after successful login
       const session = await sessionStore.create(user.userId);
       res.set('Set-Cookie', sessionStore.buildCookieHeader(session.sessionId));
+      // Auto-create workspace for new users on first Google sign-in
+      await maybeCreateFirstWorkspace(user.userId, session.sessionId, tenantService);
       // CSRF token for SPA: expose via non-HttpOnly readable endpoint (/api/auth/session), not cookie value.
       await safeAudit('SIGN_IN_SUCCEEDED', { actorId: user.userId });
       return res.redirect(302, frontendRedirect(config, '/app/dashboard?auth=success'));
@@ -206,11 +209,22 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, oid
       if (!acceptsJson && err.statusCode !== 500) {
         try {
           return res.redirect(302, frontendRedirect(config, '/login?error=auth_failed'));
-        } catch { /* fall through to JSON */ }
+        } catch { /* fall fall through to JSON */ }
       }
       next(err);
     }
   });
+
+  // Auto-create workspace for new users on first Google sign-in
+  async function maybeCreateFirstWorkspace(userId, sessionId, tenantService) {
+    // Check if the user already has any active membership
+    const existingMemberships = await tenantService.listMembershipsForUser(userId);
+    const hasActive = (existingMemberships || []).some((m) => m.status === 'active');
+    if (hasActive) return; // workspace already exists
+    // Create a new tenant/workspace
+    const tenant = await tenantService.createTenant({ businessName: `User ${userId}`, createdByUserId: userId });
+    await tenantService.addMembership({ tenantId: tenant.tenantId, userId, role: 'owner', status: 'active', invitedByUserId: userId });
+  }
 
   // Session status: GET /api/auth/session (used by frontend instead of local-storage authority)
   router.get('/auth/session', async (req, res, next) => {
@@ -295,9 +309,9 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, oid
   return router;
 }
 
+// Use openid-client for discovery + code exchange + ID-token validation.
+// Never hand-roll JWT verification.
 async function exchangeWithGoogle({ config, code, codeVerifier, nonce, state }) {
-  // Use openid-client for discovery + code exchange + ID-token validation.
-  // Never hand-roll JWT verification.
   const { Issuer } = require('openid-client');
   const issuer = await Issuer.discover(config.GOOGLE_OIDC_ISSUER);
   const client = new issuer.Client({
