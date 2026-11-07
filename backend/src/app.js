@@ -184,6 +184,10 @@ function createApp(options = {}) {
   }
   app.use('/api', requireAuthentication, workspaceTenantGate, csrfProtection, workspaceRouter);
 
+// --- Approval routes (auth + tenant) ---
+  const approvalRouter = createApprovalRoutes({ tenantService, purchaseStore, auditService });
+  app.use('/api', requireAuthentication, resolveWorkspaceMembership, csrfProtection, approvalRouter);
+
   // --- Gmail integration: callback is public (transaction-bound), others require auth+tenant ---
   const gmailRouter = createGmailRoutes({ config, gmailService, tenantService, auditService });
   async function gmailAuthGate(req, res, next) {

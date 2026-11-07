@@ -42,6 +42,15 @@ function createPaymentRoutes({ purchaseStore, auditService } = {}) {
         });
       }
 
+      // Check that the user has the purchaser/owner role with approval permission
+      const hasApprovePerm = purchase.membership?.permissions?.includes('purchases:approve');
+      if (!hasApprovePerm) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'You do not have permission to initiate PayPal payment.' },
+        });
+      }
+
       if (purchase.payment?.paypal?.orderId) {
         return res.status(409).json({
           success: false,
@@ -140,6 +149,15 @@ function createPaymentRoutes({ purchaseStore, auditService } = {}) {
         notFound.statusCode = 404;
         notFound.code = 'PURCHASE_NOT_FOUND';
         throw notFound;
+      }
+
+      // Check that the purchase has been approved and user has permission
+      const hasApprovePerm = purchase.membership?.permissions?.includes('purchases:approve');
+      if (!hasApprovePerm) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'You do not have permission to capture PayPal payment.' },
+        });
       }
 
       const { orderId } = req.body || {};
