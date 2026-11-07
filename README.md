@@ -128,15 +128,16 @@ Never place PayPal secrets or private credentials in `VITE_*` variables.
    ```
 
 2. Framework: Node.js (auto-detected)
-3. Build Command: `cd backend && npm run build` (or let Vercel use the root package.json)
-   - Or set separate Frontend and Backend projects with Vite + Express
+3. Start Command: `node src/server.js`
+   - The backend has no build step; it is executed directly with `node src/server.js`
+   - If using separate Frontend and Backend projects, configure Vite for the frontend and use the backend as an Express API
 
 ### Render
 
 1. Create a new Web Service pointing to the repo root.
 2. Set the same Environment Variables as Vercel above.
 3. Build Command: `npm install`
-4. Start Command: `cd backend && node src/app.js` (or use the `package.json` start script)
+4. Start Command: `cd backend && node src/server.js`
 5. Enable Private DNS if using MongoDB Atlas with VPC peering.
 
 ### MongoDB Atlas
