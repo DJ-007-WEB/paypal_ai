@@ -195,6 +195,8 @@ export async function getHealth() {
   return response.json();
 }
 
+/* ---------- Vendors ---------- */
+
 export async function getVendors() {
   try {
     const data = await apiFetch('/vendors');
@@ -204,6 +206,38 @@ export async function getVendors() {
       throw new Error(`Could not reach the Mandate API at ${API_BASE_URL}. Check that the backend is running.`);
     }
     throw new Error(err.message || 'Supplier catalog request failed');
+  }
+}
+
+/* ---------- PayPal checkout flow ---------- */
+
+export async function createPaypalOrder(purchaseId) {
+  try {
+    const data = await apiFetch(`/api/payments/create/${purchaseId}`, { method: 'POST' });
+    return data;
+  } catch (err) {
+    throw err;
+  }
+}
+
+export async function capturePaypalOrder(purchaseId, orderId) {
+  try {
+    const data = await apiFetch(`/api/payments/capture/${purchaseId}`, {
+      method: 'POST',
+      body: JSON.stringify({ orderId }),
+    });
+    return data;
+  } catch (err) {
+    throw err;
+  }
+}
+
+export async function getPaypalStatus(purchaseId) {
+  try {
+    const data = await apiFetch(`/api/payments/status/${purchaseId}`);
+    return data;
+  } catch (err) {
+    throw err;
   }
 }
 

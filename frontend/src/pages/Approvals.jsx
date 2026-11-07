@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { PageHeader, Button, InlineAlert, LoadingState, StatusBadge } from './components/ui.jsx';
 import { go } from './components/ui.jsx';
-import { interpretPurchaseRequest, explainPurchase, listPurchases, getPurchaseById } from './api/client.js';
+import { interpretPurchaseRequest, explainPurchase, listPurchases, getPurchaseById, createPaypalOrder, capturePaypalOrder, getPaypalStatus } from './api/client.js';
 import { useVendorNames } from './App.jsx';
 
 const STEP_FORM = 'form';
@@ -163,7 +163,7 @@ function ApprovalsPage({ profile, onNavigate }) {
               <div className="status-list">
                 <div><span><b>Policy validation — deterministic</b><small>{pending.policy?.passed ? 'Configured guardrails passed for the recommended offer' : 'One or more checks did not pass; see findings'}</small></span><strong className={pending.policy?.passed ? 'pill-good' : 'pill-bad'}>{pending.policy?.passed ? 'PASSED' : 'BLOCKED'}</strong></div>
                 <div><span><b>Human decision — required</b><small>{pending.authorization?.requiresHumanApproval ? 'An authorized person must review before anything else happens' : 'No approval action available in this prototype'}</small></span><strong className="pill-wait">REVIEW REQUIRED</strong></div>
-                <div><span><b>Payment execution — locked</b><small>Not enabled in this prototype; never a “Pay now” action</small></span><strong className="pill-wait">LOCKED</strong></div>
+                <div><span><b>PayPal payment</b><small>Order can be created after approval; capture requires PayPal user approval</small></span><strong className="pill-good">ENABLED</strong></div>
               </div>
             </div>
 
@@ -256,6 +256,14 @@ function ApprovalsPage({ profile, onNavigate }) {
                   </div>
                 </div>
               ) : null}
+
+              {pending.approval?.approvedAt && (
+                <div style={{ marginTop: 12 }}>
+                  <Button onClick={() => createPaypalOrder(pending.purchaseId)} variant="primary">
+                    Create PayPal Order
+                  </Button>
+                </div>
+              )}
 
               {rejectPayload && rejectPayload.purchaseId === pending.purchaseId ? (
                 <div>

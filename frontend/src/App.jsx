@@ -101,12 +101,12 @@ function LandingPage() {
           <div className="control-copy">
             <span className="eyebrow">Control is a feature</span>
             <h2>Automation should never mean losing control.</h2>
-            <p>Mandate separates a recommendation from permission to spend. The current prototype evaluates purchase requests; it does not execute payments.</p>
+            <p>Mandate separates a recommendation from permission to spend. Purchase requests are evaluated, and PayPal Sandbox payments may be executed after human approval.</p>
             <ul>
               <li><span>✓</span> Recommendations are advisory — never approvals.</li>
               <li><span>✓</span> Policy checks are deterministic and independent of rankings.</li>
               <li><span>✓</span> Humans retain approval authority.</li>
-              <li><span>✓</span> Payment execution is not enabled in this prototype.</li>
+              <li><span>✓</span> Payment execution via PayPal Sandbox — human approval required.</li>
             </ul>
           </div>
           <aside className="control-card">
@@ -114,7 +114,7 @@ function LandingPage() {
             {[['Recommendation', 'Decision engine'], ['Policy validation', 'Deterministic checks'], ['Authorization', 'Human decision']].map((x, i) => (
               <div className="boundary-row" key={x[0]}><span className="boundary-step">0{i + 1}</span><span><b>{x[0]}</b><small>{x[1]}</small></span><span className={i === 2 ? 'boundary-lock' : 'boundary-done'}>{i === 2 ? 'Required' : 'Separate'}</span></div>
             ))}
-            <p className="muted-note">Prototype status: payment and approval execution are not enabled.</p>
+            <p className="muted-note">PayPal Sandbox payments are enabled — human approval required for each transaction.</p>
           </aside>
         </section>
 
@@ -788,7 +788,7 @@ function Dashboard({ profile, onStartPurchase, permissions }) {
         </section>
         <section className="surface"><span className="step-kicker">Purchasing policies</span><h3>Defaults at a glance</h3><div className="compact-facts"><span>Default delivery<b>{profile?.deadline || '5'} days</b></span><span>Minimum quality<b>{profile?.quality || '70'}/100</b></span><span>Approved vendors<b>{profile?.approvedOnly ? 'Required' : 'Optional'}</b></span></div><small>Workspace preferences — request constraints are evaluated per purchase, not stored as server policy.</small><div style={{ marginTop: 10 }}><button className="inline-link" onClick={() => go('/app/policies')}>Review policy defaults →</button></div></section>
       </div>
-      <div className="honest-banner" role="note"><span aria-hidden="true">ⓘ</span><p><b>Prototype data, clearly labeled.</b> Catalog counts, purchases, and audit events come from live API endpoints and are stored by the backend, not in the browser. Approvals and payments are not implemented.</p></div>
+      <div className="honest-banner" role="note"><span aria-hidden="true">ⓘ</span><p><b>Prototype data, clearly labeled.</b> Catalog counts, purchases, and audit events come from live API endpoints and are stored by the backend, not in the browser. PayPal Sandbox payments are enabled with human approval.</p></div>
       <WorkspaceSecurityStatus />
       {!canImport ? <p className="muted-note">Vendor import is disabled for your role. Contact a workspace owner for access — this button is hidden by permission, enforced by the server.</p> : null}
     </div>

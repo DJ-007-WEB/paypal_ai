@@ -106,6 +106,7 @@ function createOrder({ amountMinor, currency, purchaseId, tenantId } = {}) {
           },
           description: description,
           invoice_id: `mandate_${purchaseId}_${crypto.randomBytes(4).toString('hex')}`,
+          custom_id: tenantId,  // <-- Add tenant ID for webhook/verification
         },
       ],
       application_context: {
@@ -270,7 +271,8 @@ function verifyWebhookSignature(reqBody, signature, timestamp) {
   if (!signature || !timestamp) return false;
 
   const env = parseEnv();
-  const constructedString = `v1:timestamp:${timestamp}:${reqBody}`;
+  // PayPal official webhook signature format: v1:<timestamp>:<raw_body>
+  const constructedString = `v1:${timestamp}:${reqBody}`;
 
   // Use the client secret to verify the signature
   const secret = Buffer.from(env.clientSecret, 'utf8');
