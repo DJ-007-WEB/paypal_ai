@@ -144,7 +144,7 @@ const purchaseBody = (overrides = {}) => ({
   ...overrides,
 });
 
-async function startTwoTenantApp({ vendorSeedA = [], vendorSeedB = [] } = {}) {
+async function startTwoTenantApp({ vendorSeedA = [], vendorSeedB = [], paypalService } = {}) {
   const config = testConfig();
   const vendorCollection = new FakeCollection();
   const app = createApp({
@@ -153,6 +153,7 @@ async function startTwoTenantApp({ vendorSeedA = [], vendorSeedB = [] } = {}) {
     vendorService: createVendorService({ collection: vendorCollection }),
     auditService: createAuditService(),
     purchaseStore: createPurchaseStore(),
+    paypalService,
     allowTestPrincipal: true,
   });
   const { userService, tenantService, vendorService } = app.__services;
@@ -176,6 +177,12 @@ async function startTwoTenantApp({ vendorSeedA = [], vendorSeedB = [] } = {}) {
   });
   const { port } = server.address();
   return { baseUrl: `http://127.0.0.1:${port}`, server, app, userA, userB, tenantA, tenantB, headersA, headersB };
+}
+
+async function closeServer(server) {
+  if (!server) return;
+  if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+  await new Promise((resolve) => server.close(() => resolve()));
 }
 
 async function api(baseUrl, method, path, body, headers = {}) {
@@ -202,7 +209,7 @@ test('missing sessions are rejected on every protected route', async () => {
       const res = await api(baseUrl, method, path, body);
       assert.equal(res.status, 401, `${method} ${path} should be 401`);
     }
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('tampered sessions are rejected', async () => {
@@ -214,7 +221,7 @@ test('tampered sessions are rejected', async () => {
     const baseUrl = `http://127.0.0.1:${port}`;
     const res = await api(baseUrl, 'GET', '/api/vendors', null, { Cookie: `${config.SESSION_COOKIE_NAME}=tampered-not-a-real-session` });
     assert.equal(res.status, 401);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('logout invalidates the session', async () => {
@@ -237,7 +244,7 @@ test('logout invalidates the session', async () => {
     // Reusing the old session cookie must now fail
     const reuse = await api(baseUrl, 'GET', '/api/auth/session', null, { Cookie: cookie });
     assert.equal(reuse.body.data.authenticated, false);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('session ID rotates conceptually after login (old session destroyed on rotate)', async () => {
@@ -260,7 +267,7 @@ test('missing Google credentials never enable fake authentication', async () => 
     // No session should have been created; protected routes still 401
     const prot = await api(baseUrl, 'GET', '/api/vendors', null);
     assert.equal(prot.status, 401);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('OAuth credentials and tokens are absent from responses', async () => {
@@ -271,7 +278,7 @@ test('OAuth credentials and tokens are absent from responses', async () => {
     assert.ok(!/client_secret|refresh_token|authorization code/i.test(text));
     const session = await api(baseUrl, 'GET', '/api/auth/session', null, {});
     assert.ok(!/client_secret/i.test(JSON.stringify(session.body)));
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 /* ---------- authorization ---------- */
@@ -290,7 +297,7 @@ test('read-only users cannot import vendors', async () => {
     const headers = { 'X-Test-User-Id': user.userId, 'X-Test-Tenant-Id': tenant.tenantId };
     const res = await api(baseUrl, 'POST', '/api/vendors/import', { offers: [offer({ offerId: 'x' })] }, headers);
     assert.equal(res.status, 403);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('purchasers cannot manage memberships', async () => {
@@ -309,7 +316,7 @@ test('purchasers cannot manage memberships', async () => {
     const headers = { 'X-Test-User-Id': purchaser.userId, 'X-Test-Tenant-Id': tenant.tenantId };
     const res = await api(baseUrl, 'PATCH', `/api/workspaces/${tenant.tenantId}/members/${other.userId}`, { role: 'admin' }, headers);
     assert.equal(res.status, 403);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('removed members lose access', async () => {
@@ -318,7 +325,7 @@ test('removed members lose access', async () => {
     await app.__services.tenantService.setMembershipStatus({ tenantId: tenantA.tenantId, userId: userA.userId, status: 'removed' });
     const res = await api(baseUrl, 'GET', '/api/vendors', null, headersA);
     assert.equal(res.status, 403);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('client-supplied tenant IDs cannot override server-resolved context', async () => {
@@ -331,7 +338,7 @@ test('client-supplied tenant IDs cannot override server-resolved context', async
     // Payload tenant mismatch on import
     const imp = await api(baseUrl, 'POST', '/api/vendors/import', { offers: [{ ...offer({ offerId: 'evil' }), tenantId: tenantB.tenantId }] }, headersA);
     assert.equal(imp.status, 403);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 /* ---------- tenant isolation ---------- */
@@ -350,7 +357,7 @@ test('A cannot list B offers; catalogs are isolated', async () => {
     assert.equal(b.body.data.length, 1);
     assert.equal(a.body.data[0].vendorId, 'v-a');
     assert.equal(b.body.data[0].vendorId, 'v-b');
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('A cannot retrieve B purchase even if ID is known; 404 is generic', async () => {
@@ -366,7 +373,7 @@ test('A cannot retrieve B purchase even if ID is known; 404 is generic', async (
     // B can still read its own
     const own = await api(baseUrl, 'GET', `/api/purchases/${purchaseId}`, null, headersB);
     assert.equal(own.status, 200);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('A cannot list B audits', async () => {
@@ -380,7 +387,7 @@ test('A cannot list B audits', async () => {
     assert.ok(Array.isArray(aAudits.body.data));
     assert.ok(bAudits.body.data.length > 0);
     assert.equal(aAudits.body.data.length, 0);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('A import cannot modify B catalog (same offerId stays isolated)', async () => {
@@ -400,7 +407,7 @@ test('A import cannot modify B catalog (same offerId stays isolated)', async () 
     const { vendorService } = app.__services;
     const bOffers = await vendorService.getCatalog({ tenantId: tenantB.tenantId });
     assert.equal(bOffers.find((o) => o.offerId === 'dup').unitPriceMinor, 99999);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('missing tenant context rejects tenant-owned operations at service layer', async () => {
@@ -436,7 +443,7 @@ test('login scopes exclude mailbox scopes; Gmail disabled fails closed', async (
     assert.equal(status.body.data.enabled, false);
     const connect = await api(baseUrl, 'GET', '/api/integrations/google-gmail/connect', null, headersA);
     assert.equal(connect.status, 501);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('token encryption round-trips and is required for Gmail storage', async () => {
@@ -461,7 +468,7 @@ test('malformed rows and oversized imports fail safely', async () => {
     const big = await api(baseUrl, 'POST', '/api/vendors/import', { offers: Array.from({ length: 2001 }, (_, i) => offer({ offerId: `o${i}` })) }, headersA);
     // Config MAX_IMPORT_ROWS=2000 by default
     assert.equal(big.status, 400);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('import is idempotent on retry with same importId', async () => {
@@ -473,19 +480,21 @@ test('import is idempotent on retry with same importId', async () => {
     const second = await api(baseUrl, 'POST', '/api/vendors/import', payload, headersA);
     assert.equal(second.status, 200);
     assert.equal(second.body.meta.idempotentReplay, true);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('background jobs carry tenantId and revalidate tenant', async () => {
-  const { app, tenantA } = await startTwoTenantApp();
-  const worker = createPurchaseWorker({ tenantService: app.__services.tenantService, auditService: app.__services.auditService });
-  await assert.rejects(() => worker.processJob({ jobId: 'j1', idempotencyKey: 'k1' }), /tenantId is required/);
-  const ok = await worker.processJob({ jobId: 'j1', tenantId: tenantA.tenantId, idempotencyKey: 'k1', actorId: 'u1' });
-  assert.equal(ok.status, 'completed');
-  const dup = await worker.processJob({ jobId: 'j1', tenantId: tenantA.tenantId, idempotencyKey: 'k1', actorId: 'u1' });
-  assert.equal(dup.status, 'duplicate-suppressed');
-  app.__services && app.__services.tenantService && (await app.__services.tenantService.updateTenant(tenantA.tenantId, { status: 'suspended' }));
-  await assert.rejects(() => worker.processJob({ jobId: 'j2', tenantId: tenantA.tenantId, idempotencyKey: 'k2' }), /unavailable/);
+  const { app, tenantA, server } = await startTwoTenantApp();
+  try {
+    const worker = createPurchaseWorker({ tenantService: app.__services.tenantService, auditService: app.__services.auditService });
+    await assert.rejects(() => worker.processJob({ jobId: 'j1', idempotencyKey: 'k1' }), /tenantId is required/);
+    const ok = await worker.processJob({ jobId: 'j1', tenantId: tenantA.tenantId, idempotencyKey: 'k1', actorId: 'u1' });
+    assert.equal(ok.status, 'completed');
+    const dup = await worker.processJob({ jobId: 'j1', tenantId: tenantA.tenantId, idempotencyKey: 'k1', actorId: 'u1' });
+    assert.equal(dup.status, 'duplicate-suppressed');
+    app.__services && app.__services.tenantService && (await app.__services.tenantService.updateTenant(tenantA.tenantId, { status: 'suspended' }));
+    await assert.rejects(() => worker.processJob({ jobId: 'j2', tenantId: tenantA.tenantId, idempotencyKey: 'k2' }), /unavailable/);
+  } finally { await closeServer(server); }
 });
 
 /* ---------- hardening spot-checks ---------- */
@@ -497,7 +506,7 @@ test('security headers are present (helmet)', async () => {
     assert.ok(res.headers.get('content-security-policy'));
     assert.ok(res.headers.get('x-content-type-options'));
     assert.equal(res.headers.get('x-powered-by'), null);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
 });
 
 test('production startup rejects insecure configuration', async () => {
@@ -523,5 +532,161 @@ test('recommendation never authorizes payment (regression guard)', async () => {
     const res = await api(baseUrl, 'POST', '/api/purchases/evaluate', purchaseBody(), headersA);
     assert.equal(res.body.data.authorization.paymentAuthorized, false);
     assert.equal(res.body.data.policy.paymentAuthorized, false);
-  } finally { server.close(); }
+  } finally { await closeServer(server); }
+});
+
+
+/* ---------- approvals, payments, webhooks ---------- */
+
+function seedPurchase(tenantId, purchaseId, overrides = {}) {
+  return {
+    tenantId,
+    purchaseId,
+    requestId: `req_${purchaseId}`,
+    request: { productId: 'BRG-6204', quantity: 10, maxTotalMinor: 5000000, currency: 'INR', maxDeliveryDays: 5 },
+    decision: { status: 'RECOMMENDED' },
+    policy: { passed: true },
+    recommendation: { offerId: 'offer-1', vendorId: 'vendor-1', totalMinor: 400000, currency: 'INR', score: 90 },
+    authorization: { requiresHumanApproval: true, humanApproved: false, paymentAuthorized: false, paymentCaptured: false },
+    approvalStatus: 'PENDING',
+    paymentStatus: 'NONE',
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function fakePaypal({ enabled = true, captureResult } = {}) {
+  const calls = { createOrder: [], captureOrder: [], verifyOrder: [], verifyWebhookSignature: [] };
+  return {
+    calls,
+    isEnabled: () => enabled,
+    async createOrder(args) {
+      calls.createOrder.push(args);
+      return { id: 'ORDER-TEST', status: 'CREATED', links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-TEST' }] };
+    },
+    async getOrder(orderId) {
+      return { id: orderId, status: 'CREATED', links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-TEST' }] };
+    },
+    async captureOrder(args) {
+      calls.captureOrder.push(args);
+      return captureResult || { status: 'COMPLETED', amountMinor: args.expectedAmountMinor, currency: args.expectedCurrency, captureId: 'CAP-TEST' };
+    },
+    async verifyOrder(args) {
+      calls.verifyOrder.push(args);
+      return { valid: true, reasons: [] };
+    },
+    async verifyWebhookSignature(args) {
+      calls.verifyWebhookSignature.push(args);
+      return false;
+    },
+    parseWebhookEvent() { return { eventType: 'CHECKOUT.ORDER.APPROVED', eventId: 'EVT-TEST', orderId: 'ORDER-TEST' }; },
+  };
+}
+
+test('PayPal configuration is sandbox-only and credentials must be paired', () => {
+  assert.throws(() => testConfig({ PAYPAL_ENV: 'live', PAYPAL_CLIENT_ID: 'id', PAYPAL_CLIENT_SECRET: 'secret' }), /must be "sandbox"/i);
+  assert.throws(() => testConfig({ PAYPAL_ENV: 'sandbox', PAYPAL_CLIENT_ID: 'id' }), /must both be set/i);
+});
+
+test('approval requires the server permission and is single-use', async () => {
+  const { baseUrl, server, app, headersA, tenantA } = await startTwoTenantApp();
+  try {
+    const { userService, tenantService, purchaseStore } = app.__services;
+    const purchaser = await userService.__seed({ googleSubject: 'apr-purchaser', email: 'purchaser@example.com', emailVerified: true, status: 'active' });
+    await tenantService.__seedMembership({ tenantId: tenantA.tenantId, userId: purchaser.userId, role: 'purchaser', permissions: tenantService.permissionsForRole('purchaser'), status: 'active' });
+    const record = await purchaseStore.create(seedPurchase(tenantA.tenantId, 'purchase_approve_1'));
+    const purchaserHeaders = { 'X-Test-User-Id': purchaser.userId, 'X-Test-Tenant-Id': tenantA.tenantId };
+
+    const forbidden = await api(baseUrl, 'POST', `/api/approvals/purchase/${record.purchaseId}/approve`, { rationale: 'nope' }, purchaserHeaders);
+    assert.equal(forbidden.status, 403);
+
+    const approved = await api(baseUrl, 'POST', `/api/approvals/purchase/${record.purchaseId}/approve`, { rationale: 'checked' }, headersA);
+    assert.equal(approved.status, 200);
+    assert.equal(approved.body.data.approvalStatus, 'APPROVED');
+    assert.equal(approved.body.data.authorization.paymentCaptured, false);
+
+    const again = await api(baseUrl, 'POST', `/api/approvals/purchase/${record.purchaseId}/approve`, { rationale: 'again' }, headersA);
+    assert.equal(again.status, 409);
+    assert.equal(again.body.error.code, 'ALREADY_DECIDED');
+  } finally { await closeServer(server); }
+});
+
+test('payment requires approval, uses the recommendation amount, and completes only on verified capture', async () => {
+  const paypal = fakePaypal();
+  const { baseUrl, server, app, headersA, tenantA } = await startTwoTenantApp({ paypalService: paypal });
+  try {
+    const purchaseStore = app.__services.purchaseStore;
+    const pending = await purchaseStore.create(seedPurchase(tenantA.tenantId, 'purchase_pending_1'));
+
+    const blocked = await api(baseUrl, 'POST', `/api/payments/create/${pending.purchaseId}`, {}, headersA);
+    assert.equal(blocked.status, 409);
+    assert.equal(blocked.body.error.code, 'APPROVAL_REQUIRED');
+    assert.equal(paypal.calls.createOrder.length, 0);
+
+    const approved = await purchaseStore.create(seedPurchase(tenantA.tenantId, 'purchase_approved_1', {
+      approvalStatus: 'APPROVED',
+      approval: { decision: 'APPROVED', approvedAt: new Date().toISOString(), approvedBy: 'owner' },
+      authorization: { requiresHumanApproval: false, humanApproved: true, paymentAuthorized: false, paymentCaptured: false },
+    }));
+    const created = await api(baseUrl, 'POST', `/api/payments/create/${approved.purchaseId}`, {}, headersA);
+    assert.equal(created.status, 200);
+    assert.equal(created.body.data.paypalOrderId, 'ORDER-TEST');
+    assert.equal(paypal.calls.createOrder.length, 1);
+    assert.equal(paypal.calls.createOrder[0].amountMinor, 400000, 'uses recommendation total, not the budget ceiling');
+    assert.notEqual(paypal.calls.createOrder[0].amountMinor, approved.request.maxTotalMinor);
+
+    const captured = await api(baseUrl, 'POST', `/api/payments/capture/${approved.purchaseId}`, { orderId: 'ORDER-TEST' }, headersA);
+    assert.equal(captured.status, 200);
+    assert.equal(captured.body.data.captureStatus, 'COMPLETED');
+
+    const status = await api(baseUrl, 'GET', `/api/payments/status/${approved.purchaseId}`, null, headersA);
+    assert.equal(status.status, 200);
+    assert.equal(status.body.data.paymentStatus, 'COMPLETED');
+    assert.equal(status.body.data.authorization.paymentCaptured, true);
+  } finally { await closeServer(server); }
+});
+
+test('an unverified PayPal capture never marks the purchase paid', async () => {
+  const paypal = fakePaypal({ captureResult: { status: 'PENDING', amountMinor: 400000, currency: 'INR', captureId: null } });
+  const { baseUrl, server, app, headersA, tenantA } = await startTwoTenantApp({ paypalService: paypal });
+  try {
+    const record = await app.__services.purchaseStore.create(seedPurchase(tenantA.tenantId, 'purchase_pending_capture', {
+      approvalStatus: 'APPROVED',
+      approval: { approvedAt: new Date().toISOString() },
+      authorization: { requiresHumanApproval: false, humanApproved: true, paymentAuthorized: false, paymentCaptured: false },
+    }));
+    await api(baseUrl, 'POST', `/api/payments/create/${record.purchaseId}`, {}, headersA);
+    const captured = await api(baseUrl, 'POST', `/api/payments/capture/${record.purchaseId}`, { orderId: 'ORDER-TEST' }, headersA);
+    assert.equal(captured.status, 502);
+    assert.equal(captured.body.error.code, 'PAYMENT_NOT_COMPLETED');
+    const status = await api(baseUrl, 'GET', `/api/payments/status/${record.purchaseId}`, null, headersA);
+    assert.notEqual(status.body.data.paymentStatus, 'COMPLETED');
+    assert.equal(status.body.data.authorization.paymentCaptured, false);
+  } finally { await closeServer(server); }
+});
+
+test('PayPal webhook fails closed for invalid signatures and when not configured', async () => {
+  const paypal = fakePaypal();
+  const enabled = await startTwoTenantApp({ paypalService: paypal });
+  try {
+    const res = await fetch(`${enabled.baseUrl}/api/payments/webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'EVT-TEST', event_type: 'CHECKOUT.ORDER.APPROVED' }),
+    });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.equal(body.error.code, 'WEBHOOK_SIGNATURE_INVALID');
+    assert.equal(paypal.calls.verifyWebhookSignature.length, 1);
+  } finally { await closeServer(enabled.server); }
+
+  const disabled = await startTwoTenantApp({ paypalService: fakePaypal({ enabled: false }) });
+  try {
+    const res = await fetch(`${disabled.baseUrl}/api/payments/webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'EVT-TEST' }),
+    });
+    assert.equal(res.status, 503);
+  } finally { await closeServer(disabled.server); }
 });

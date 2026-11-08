@@ -156,6 +156,12 @@ async function startServer(customOffers = defaultOffers) {
   });
 }
 
+async function closeServer(server) {
+  if (!server) return;
+  if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+  await new Promise((resolve) => server.close(() => resolve()));
+}
+
 async function apiRequest(baseUrl, method, path, body, extraHeaders = {}) {
   const headers = { ...extraHeaders };
   if (body) headers['Content-Type'] = 'application/json';
@@ -184,7 +190,7 @@ test('health endpoint returns expected response', async () => {
     assert.equal(res.body.data.status, 'ok');
     assert.equal(res.body.data.service, 'mandate-api');
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -195,7 +201,7 @@ test('protected routes reject unauthenticated calls', async () => {
     assert.equal(res.status, 401);
     assert.equal(res.body.success, false);
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -210,7 +216,7 @@ test('valid purchase evaluation returns a recommendation when eligible offers ex
     assert.equal(res.body.data.policy.passed, true);
     assert.equal(res.body.data.authorization.paymentAuthorized, false);
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -223,7 +229,7 @@ test('malformed request returns HTTP 400', async () => {
     assert.equal(res.body.error.code, 'VALIDATION_ERROR');
     assert.ok(Array.isArray(res.body.error.details));
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -235,7 +241,7 @@ test('unsupported currency is rejected', async () => {
     assert.equal(res.body.error.code, 'VALIDATION_ERROR');
     assert.match(JSON.stringify(res.body), /currency/i);
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -249,7 +255,7 @@ test('no eligible offer returns NO_ELIGIBLE_OFFER', async () => {
     assert.equal(res.body.data.decision.status, 'NO_ELIGIBLE_OFFER');
     assert.equal(res.body.data.policy.passed, false);
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -262,7 +268,7 @@ test('over-budget offers are not recommended', async () => {
     assert.equal(res.status, 200);
     assert.equal(res.body.data.decision.status, 'NO_ELIGIBLE_OFFER');
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -276,7 +282,7 @@ test('unapproved vendors are excluded when approval is required', async () => {
     assert.equal(res.status, 200);
     assert.equal(res.body.data.decision.recommendedVendorId, 'vendor-low');
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -289,7 +295,7 @@ test('insufficient inventory prevents recommendation', async () => {
     assert.equal(res.status, 200);
     assert.equal(res.body.data.decision.status, 'NO_ELIGIBLE_OFFER');
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -307,7 +313,7 @@ test('policy violations prevent an acceptable recommendation from being returned
     assert.equal(res.body.data.policy.passed, false);
     assert.notEqual(res.body.data.decision.status, 'RECOMMENDED');
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -321,7 +327,7 @@ test('purchase evaluation is retrievable by purchase ID', async () => {
     assert.equal(retrieval.body.success, true);
     assert.equal(retrieval.body.data.purchaseId, purchaseId);
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -332,7 +338,7 @@ test('unknown purchase ID returns HTTP 404', async () => {
     assert.equal(res.status, 404);
     assert.equal(res.body.success, false);
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -344,7 +350,7 @@ test('evaluation creates audit events', async () => {
     const events = await apiRequest(baseUrl, 'GET', `/api/purchases/${res.body.data.purchaseId}`, null, authHeaders);
     assert.equal(events.body.data.auditEvents.length > 0, true);
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -356,7 +362,7 @@ test('error responses do not expose stack traces', async () => {
     assert.equal(res.body.error.message.includes('stack'), false);
     assert.equal(`${res.body}`.includes('TypeError'), false);
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -369,7 +375,7 @@ test('request IDs are present in responses', async () => {
     assert.ok(res.body.meta.requestId);
     assert.ok(res.headers.get('x-request-id'));
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -381,7 +387,7 @@ test('repeated evaluation with identical input and offers produces deterministic
     assert.deepEqual(first.body.data.decision, second.body.data.decision);
     assert.deepEqual(first.body.data.policy, second.body.data.policy);
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
 
@@ -392,6 +398,6 @@ test('system never claims payment has been authorized', async () => {
     assert.equal(res.body.data.authorization.paymentAuthorized, false);
     assert.equal(res.body.data.policy.paymentAuthorized, false);
   } finally {
-    server.close();
+    await closeServer(server);
   }
 });
