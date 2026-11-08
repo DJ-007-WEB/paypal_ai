@@ -5,8 +5,8 @@ const crypto = require('node:crypto');
 /**
  * Token encryption for Gmail refresh tokens (§5.2).
  * - Uses AES-256-GCM with TOKEN_ENCRYPTION_KEY (base64 32B or hex 64).
- * - If KMS_KEY_ID is configured, deployment should use envelope encryption via KMS;
- *   this module logs the KMS mode without handling raw keys in logs.
+ * - KMS is NOT implemented by this deployment. KMS_KEY_ID alone is reported as
+ *   not configured rather than falsely claiming KMS envelope encryption.
  */
 function getKeyBytes(config) {
   const raw = config.TOKEN_ENCRYPTION_KEY;
@@ -19,19 +19,18 @@ function createCryptoService({ config }) {
   if (!config) throw new Error('Crypto service requires config.');
 
   function isAvailable() {
-    return Boolean(config.TOKEN_ENCRYPTION_KEY || config.KMS_KEY_ID);
+    const key = getKeyBytes(config);
+    return Boolean(key && key.length === 32);
   }
 
   function mode() {
-    if (config.KMS_KEY_ID) return 'kms';
-    if (config.TOKEN_ENCRYPTION_KEY) return 'local-key';
-    return 'not-configured';
+    return isAvailable() ? 'local-key' : 'not-configured';
   }
 
   function encrypt(plaintext) {
     const key = getKeyBytes(config);
     if (!key || key.length !== 32) {
-      throw new Error('Token encryption is not configured (set TOKEN_ENCRYPTION_KEY or KMS_KEY_ID).');
+      throw new Error('Token encryption is not configured (set TOKEN_ENCRYPTION_KEY).');
     }
     if (typeof plaintext !== 'string' || !plaintext) throw new Error('Plaintext is required for encryption.');
     const iv = crypto.randomBytes(12);
@@ -43,14 +42,13 @@ function createCryptoService({ config }) {
       iv: iv.toString('base64'),
       tag: tag.toString('base64'),
       alg: 'aes-256-gcm',
-      kmsKeyId: config.KMS_KEY_ID || null,
     };
   }
 
   function decrypt({ ciphertext, iv, tag }) {
     const key = getKeyBytes(config);
     if (!key || key.length !== 32) {
-      throw new Error('Token encryption is not configured (set TOKEN_ENCRYPTION_KEY or KMS_KEY_ID).');
+      throw new Error('Token encryption is not configured (set TOKEN_ENCRYPTION_KEY).');
     }
     if (!ciphertext || !iv || !tag) throw new Error('ciphertext, iv, and tag are required for decryption.');
     const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64'));

@@ -43,13 +43,16 @@ function createTenantService({ tenantCollection = null, membershipCollection = n
   function clone(v) { return v ? JSON.parse(JSON.stringify(v)) : null; }
   function membershipKey(tenantId, userId) { return `${tenantId}:${userId}`; }
 
-  async function createTenant({ businessName, createdByUserId = null, businessEmail = '' }) {
+  async function createTenant({ businessName, createdByUserId = null, businessEmail = '', tenantId = null }) {
     if (!businessName || typeof businessName !== 'string' || !businessName.trim()) {
       throw new Error('businessName is required.');
     }
+    if (tenantId !== null && !/^tenant_[a-z0-9_]{6,64}$/.test(String(tenantId))) {
+      throw new Error('Invalid tenantId.');
+    }
     const now = new Date().toISOString();
     const tenant = {
-      tenantId: `tenant_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`,
+      tenantId: tenantId || `tenant_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`,
       businessName: businessName.trim(),
       businessEmail: businessEmail || '',
       businessEmailVerifiedAt: null,
@@ -61,11 +64,52 @@ function createTenantService({ tenantCollection = null, membershipCollection = n
       createdByUserId,
     };
     if (tenantCollection) {
-      await tenantCollection.insertOne({ ...tenant });
+      try {
+        await tenantCollection.insertOne({ ...tenant });
+      } catch (err) {
+        if (err && err.code === 11000) {
+          const existing = await getTenant(tenant.tenantId);
+          if (existing) return clone(existing);
+        }
+        throw err;
+      }
     } else {
+      if (tenants.has(tenant.tenantId)) return clone(tenants.get(tenant.tenantId));
       tenants.set(tenant.tenantId, { ...tenant });
     }
     return clone(tenant);
+  }
+
+  /**
+   * Idempotent first-login workspace creation.
+   * The deterministic tenant id prevents duplicate personal workspaces when two
+   * callback requests race or when Render restarts between tenant and membership
+   * writes. If any active membership already exists, no new workspace is created.
+   */
+  async function ensureWorkspaceForUser({ userId, businessName, businessEmail = '' } = {}) {
+    if (!userId) throw new Error('userId is required.');
+    const active = await listMembershipsForUser(userId);
+    if (Array.isArray(active) && active.length > 0) {
+      const tenant = await getTenant(active[0].tenantId);
+      return { tenant, membership: active[0], created: false };
+    }
+    const digest = crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 20);
+    const tenantId = `tenant_personal_${digest}`;
+    const name = (businessName && String(businessName).trim()) || 'My workspace';
+    let tenant = await getTenant(tenantId);
+    if (!tenant) tenant = await createTenant({ tenantId, businessName: name, createdByUserId: userId, businessEmail });
+    let membership = await getMembership({ tenantId, userId });
+    if (!membership) {
+      try {
+        membership = await addMembership({ tenantId, userId, role: 'owner', status: 'active', invitedByUserId: userId });
+      } catch (err) {
+        if (!err || err.code !== 'MEMBERSHIP_EXISTS') throw err;
+        membership = await getMembership({ tenantId, userId });
+      }
+    } else if (membership.status !== 'active') {
+      membership = await setMembershipStatus({ tenantId, userId, status: 'active' });
+    }
+    return { tenant: await getTenant(tenantId), membership, created: true };
   }
 
   async function getTenant(tenantId) {
@@ -125,7 +169,7 @@ function createTenantService({ tenantCollection = null, membershipCollection = n
     return clone(next);
   }
 
-  async function addMembership({ tenantId, userId, role = 'purchaser', status = 'active', invitedByUserId = null }) {
+  async function addMembership({ tenantId, userId, role = 'purchaser', status = 'active', invitedByUserId = null, invitedEmail = '' }) {
     if (!tenantId || !userId) throw new Error('tenantId and userId are required.');
     if (!ROLES[role]) throw new Error(`Unknown role: ${role}`);
     if (!['active', 'invited', 'disabled', 'removed'].includes(status)) throw new Error('Invalid membership status.');
@@ -139,6 +183,9 @@ function createTenantService({ tenantCollection = null, membershipCollection = n
       permissions: permissionsForRole(role),
       status,
       invitedByUserId,
+      invitedEmail: invitedEmail ? String(invitedEmail).trim().toLowerCase() : '',
+      invitedAt: status === 'invited' ? now : null,
+      acceptedAt: status === 'active' ? now : null,
       createdAt: now,
       updatedAt: now,
     };
@@ -189,6 +236,18 @@ function createTenantService({ tenantCollection = null, membershipCollection = n
     return out;
   }
 
+  async function listInvitationsForUser(userId) {
+    if (membershipCollection) {
+      const docs = await membershipCollection.find({ userId, status: 'invited' }).toArray();
+      return docs.map((d) => { const { _id, ...rest } = d; return clone(rest); });
+    }
+    const out = [];
+    for (const m of memberships.values()) {
+      if (m.userId === userId && m.status === 'invited') out.push(clone(m));
+    }
+    return out;
+  }
+
   async function listMembershipsForTenant(tenantId) {
     if (membershipCollection) {
       const docs = await membershipCollection.find({ tenantId }).toArray();
@@ -220,6 +279,8 @@ function createTenantService({ tenantCollection = null, membershipCollection = n
     const current = await getMembership({ tenantId, userId });
     if (!current) return null;
     const patch = { status, updatedAt: new Date().toISOString() };
+    if (status === 'active' && !current.acceptedAt) patch.acceptedAt = patch.updatedAt;
+    if (status === 'invited' && !current.invitedAt) patch.invitedAt = patch.updatedAt;
     if (membershipCollection) {
       await membershipCollection.updateOne({ tenantId, userId }, { $set: patch });
       return getMembership({ tenantId, userId });
@@ -262,8 +323,8 @@ function createTenantService({ tenantCollection = null, membershipCollection = n
 
   return {
     PERMISSIONS, ROLES, permissionsForRole,
-    createTenant, getTenant, updateTenant, setBusinessEmailVerified,
-    addMembership, getMembership, listMembershipsForUser, listMembershipsForTenant,
+    createTenant, getTenant, updateTenant, setBusinessEmailVerified, ensureWorkspaceForUser,
+    addMembership, getMembership, listMembershipsForUser, listInvitationsForUser, listMembershipsForTenant,
     updateMembershipRole, setMembershipStatus, hasPermission, ensureIndexes,
     __seedTenant, __seedMembership,
   };

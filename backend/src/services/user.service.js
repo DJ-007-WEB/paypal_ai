@@ -33,6 +33,19 @@ function createUserService({ collection = null } = {}) {
     return clone((userId && memory.get(userId)) || null);
   }
 
+  async function findByEmail(email) {
+    const normalized = String(email || '').trim().toLowerCase();
+    if (!normalized) return null;
+    if (collection) {
+      const doc = await collection.findOne({ email: normalized });
+      return clone(doc && (({ _id, ...rest }) => rest)(doc));
+    }
+    for (const user of memory.values()) {
+      if (String(user.email || '').toLowerCase() === normalized) return clone(user);
+    }
+    return null;
+  }
+
   async function createFromOidc({ googleSubject, email, emailVerified, displayName }) {
     if (!googleSubject || typeof googleSubject !== 'string') throw new Error('googleSubject is required.');
     const now = new Date().toISOString();
@@ -122,7 +135,7 @@ function createUserService({ collection = null } = {}) {
     return clone(entry);
   }
 
-  return { findById, findByGoogleSub, createFromOidc, updateLogin, findOrCreateFromOidc, disable, ensureIndexes, __seed };
+  return { findById, findByGoogleSub, findByEmail, createFromOidc, updateLogin, findOrCreateFromOidc, disable, ensureIndexes, __seed };
 }
 
 module.exports = { createUserService };

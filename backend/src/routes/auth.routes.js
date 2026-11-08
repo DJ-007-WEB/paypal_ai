@@ -1,17 +1,20 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { createOAuthTransactionStore } = require('../services/oauthTransaction.service');
+const { createCsrfMiddleware } = require('../middleware/csrf');
 
 /**
  * Google OpenID Connect authentication routes (§4).
  * - Authorization-code flow with state, nonce, PKCE.
  * - Transaction state stored server-side with short expiry + transaction cookie.
+ * - Mongo-backed transaction store when available (Render restarts/multi-instance).
  * - Exact allowlisted callback URI from config (never derived from Host).
- * - Code exchange + ID-token validation via openid-client when enabled.
+ * - Code exchange + ID-token validation via openid-client v6 when enabled.
  * - Google `sub` is the stable identity key; email must be verified.
  * - Session rotation after login; allowlisted frontend redirects only.
  * - No fake-auth fallback; disabled integration fails closed.
- * - Auto-create workspace on first Google sign-in.
+ * - Idempotent first-login workspace creation.
  */
 
 function base64url(buf) {
@@ -75,10 +78,11 @@ function frontendRedirect(config, path) {
   return `${base}${safePath}`;
 }
 
-function createAuthRoutes({ config, userService, sessionStore, auditService, oidcExchange = null } = {}) {
+function createAuthRoutes({ config, userService, sessionStore, auditService, tenantService, oidcExchange = null, oauthTransactionStore = null } = {}) {
   const express = require('express');
   const router = express.Router();
-  const transactions = createTransactionStore();
+  const transactions = oauthTransactionStore || createOAuthTransactionStore();
+  const { csrfProtection } = createCsrfMiddleware({ sessionStore, config });
 
   function transactionCookieHeader(transactionId) {
     const parts = [`mandate.oauth_tx=${encodeURIComponent(transactionId)}`, 'Path=/api/auth/google', 'HttpOnly', 'Max-Age=600'];
@@ -116,7 +120,7 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, oid
       const nonce = base64url(crypto.randomBytes(32));
       const codeVerifier = base64url(crypto.randomBytes(64));
       const codeChallenge = sha256Base64Url(codeVerifier);
-      const transactionId = transactions.create({ state, nonce, codeVerifier });
+      const transactionId = await transactions.create({ kind: 'oidc', state, nonce, codeVerifier });
       await safeAudit('SIGN_IN_STARTED', {});
       res.set('Set-Cookie', transactionCookieHeader(transactionId));
       // Do not log callback query strings or codes.
@@ -150,7 +154,7 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, oid
         err.code = 'OAUTH_TRANSACTION_INVALID';
         throw err;
       }
-      const tx = transactions.consume(transactionId, state);
+      const tx = await transactions.consume({ transactionId, state, kind: 'oidc' });
       if (!tx) {
         await safeAudit('SIGN_IN_FAILED', { reason: 'expired_or_replayed_transaction' });
         const err = new Error('OAuth transaction has expired or was already used. Please try again.');
@@ -193,7 +197,7 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, oid
       const session = await sessionStore.create(user.userId);
       res.set('Set-Cookie', sessionStore.buildCookieHeader(session.sessionId));
       // Auto-create workspace for new users on first Google sign-in
-      await maybeCreateFirstWorkspace(user.userId, session.sessionId, tenantService);
+      await maybeCreateFirstWorkspace({ user, tenantService });
       // CSRF token for SPA: expose via non-HttpOnly readable endpoint (/api/auth/session), not cookie value.
       await safeAudit('SIGN_IN_SUCCEEDED', { actorId: user.userId });
       return res.redirect(302, frontendRedirect(config, '/app/dashboard?auth=success'));
@@ -215,15 +219,17 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, oid
     }
   });
 
-  // Auto-create workspace for new users on first Google sign-in
-  async function maybeCreateFirstWorkspace(userId, sessionId, tenantService) {
-    // Check if the user already has any active membership
-    const existingMemberships = await tenantService.listMembershipsForUser(userId);
-    const hasActive = (existingMemberships || []).some((m) => m.status === 'active');
-    if (hasActive) return; // workspace already exists
-    // Create a new tenant/workspace
-    const tenant = await tenantService.createTenant({ businessName: `User ${userId}`, createdByUserId: userId });
-    await tenantService.addMembership({ tenantId: tenant.tenantId, userId, role: 'owner', status: 'active', invitedByUserId: userId });
+  // Auto-create workspace for new users on first Google sign-in.
+  // Idempotent and deterministic; never duplicates tenants on callback retries.
+  async function maybeCreateFirstWorkspace({ user, tenantService: service } = {}) {
+    if (!service || !user || !user.userId) return null;
+    const emailLocal = String(user.email || '').split('@')[0];
+    const businessName = user.displayName ? `${user.displayName}'s workspace` : `${emailLocal || 'My'} workspace`;
+    return service.ensureWorkspaceForUser({
+      userId: user.userId,
+      businessName,
+      businessEmail: user.emailVerified ? user.email : '',
+    });
   }
 
   // Session status: GET /api/auth/session (used by frontend instead of local-storage authority)
@@ -279,8 +285,8 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, oid
     } catch (err) { next(err); }
   });
 
-  // Logout: POST /api/auth/logout
-  router.post('/auth/logout', async (req, res, next) => {
+  // Logout: POST /api/auth/logout (CSRF-protected for cookie sessions)
+  router.post('/auth/logout', csrfProtection, async (req, res, next) => {
     try {
       const cookieName = config.SESSION_COOKIE_NAME;
       const header = req.get('Cookie') || '';
@@ -309,24 +315,35 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, oid
   return router;
 }
 
-// Use openid-client for discovery + code exchange + ID-token validation.
+// Use openid-client v6 for discovery + code exchange + ID-token validation.
 // Never hand-roll JWT verification.
+let cachedProvider = null;
 async function exchangeWithGoogle({ config, code, codeVerifier, nonce, state }) {
-  const { Issuer } = require('openid-client');
-  const issuer = await Issuer.discover(config.GOOGLE_OIDC_ISSUER);
-  const client = new issuer.Client({
-    client_id: config.GOOGLE_OIDC_CLIENT_ID,
-    client_secret: config.getSecrets ? config.getSecrets().GOOGLE_OIDC_CLIENT_SECRET : process.env.GOOGLE_OIDC_CLIENT_SECRET,
-    redirect_uris: [config.GOOGLE_OIDC_REDIRECT_URI],
-    response_types: ['code'],
+  const key = `${config.GOOGLE_OIDC_ISSUER}|${config.GOOGLE_OIDC_CLIENT_ID}`;
+  if (!cachedProvider || cachedProvider.key !== key) {
+    const { discovery, ClientSecretPost } = await import('openid-client');
+    const secret = config.getSecrets ? config.getSecrets().GOOGLE_OIDC_CLIENT_SECRET : '';
+    const value = await discovery(
+      new URL(config.GOOGLE_OIDC_ISSUER),
+      config.GOOGLE_OIDC_CLIENT_ID,
+      { client_secret: secret, redirect_uris: [config.GOOGLE_OIDC_REDIRECT_URI], response_types: ['code'] },
+      ClientSecretPost(secret)
+    );
+    cachedProvider = { key, value };
+  }
+  const { authorizationCodeGrant } = await import('openid-client');
+  const currentUrl = new URL(config.GOOGLE_OIDC_REDIRECT_URI);
+  currentUrl.searchParams.set('code', code);
+  currentUrl.searchParams.set('state', state);
+  const tokenSet = await authorizationCodeGrant(cachedProvider.value, currentUrl, {
+    expectedState: state,
+    expectedNonce: nonce,
+    pkceCodeVerifier: codeVerifier,
+    idTokenExpected: true,
   });
-  const tokenSet = await client.callback(
-    config.GOOGLE_OIDC_REDIRECT_URI,
-    { code, state },
-    { nonce, state, code_verifier: codeVerifier }
-  );
   const claims = tokenSet.claims();
-  // Validate issuer/audience/expiry via library (client.callback already does); double-check:
+  if (!claims) throw new Error('Missing ID token claims.');
+  // Library validates signature/issuer/audience/expiry/nonce; keep defensive checks.
   if (claims.iss !== config.GOOGLE_OIDC_ISSUER && claims.iss !== 'https://accounts.google.com') {
     throw new Error('Invalid issuer.');
   }
@@ -335,7 +352,7 @@ async function exchangeWithGoogle({ config, code, codeVerifier, nonce, state }) 
   return {
     sub: claims.sub,
     email: claims.email,
-    email_verified: claims.email_verified,
+    email_verified: claims.email_verified === true,
     name: claims.name,
   };
 }

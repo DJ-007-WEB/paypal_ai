@@ -89,6 +89,21 @@ function createWorkspaceRoutes({ tenantService, userService, auditService } = {}
     } catch (err) { next(err); }
   });
 
+  // List pending invitations for the authenticated user (before :tenantId route).
+  router.get('/workspaces/invitations', async (req, res, next) => {
+    try {
+      const invites = await tenantService.listInvitationsForUser(req.user.userId);
+      const data = [];
+      for (const invite of invites) {
+        const tenant = await tenantService.getTenant(invite.tenantId);
+        if (tenant && tenant.status === 'active') {
+          data.push({ tenantId: tenant.tenantId, businessName: tenant.businessName, role: invite.role, invitedEmail: invite.invitedEmail || '' });
+        }
+      }
+      return res.json({ success: true, data: { invitations: data } });
+    } catch (err) { next(err); }
+  });
+
   // Get workspace settings
   router.get('/workspaces/:tenantId', async (req, res, next) => {
     try {
@@ -153,17 +168,16 @@ function createWorkspaceRoutes({ tenantService, userService, auditService } = {}
       if (req.user.emailVerified && userEmail && userEmail === rawEmail) {
         method = 'google-identity';
       } else {
-        // Explicit verification placeholder (future: DNS TXT challenge for company domains).
-        // For Gmail addresses, require the signed-in Google identity to match; otherwise
-        // record an explicit owner-attested verification.
+        // No independent DNS/mailbox challenge is implemented. Be explicit:
+        // this is an owner attestation, not verified ownership of the domain.
         const isGmail = rawEmail.endsWith('@gmail.com') || rawEmail.endsWith('@googlemail.com');
         if (isGmail) {
-          const err = new Error('This Gmail address does not match your verified Google identity. Sign in with that address or use an explicit account-switch flow.');
+          const err = new Error('This Gmail address does not match your verified Google identity. Sign in with that address before setting it as the business email.');
           err.statusCode = 403;
           err.code = 'BUSINESS_EMAIL_MISMATCH';
           throw err;
         }
-        method = 'explicit-verification';
+        method = 'owner-attested';
       }
       const updated = await tenantService.setBusinessEmailVerified({
         tenantId: req.params.tenantId,
@@ -197,7 +211,7 @@ function createWorkspaceRoutes({ tenantService, userService, auditService } = {}
       need('members:read', membership);
       const members = await tenantService.listMembershipsForTenant(req.params.tenantId);
       // Strip sensitive internals; return role/status/userId only
-      const safe = members.map((m) => ({ userId: m.userId, role: m.role, status: m.status, createdAt: m.createdAt }));
+      const safe = members.map((m) => ({ userId: m.userId, role: m.role, status: m.status, invitedEmail: m.invitedEmail || '', createdAt: m.createdAt, acceptedAt: m.acceptedAt || null }));
       return res.json({ success: true, data: { members: safe } });
     } catch (err) { next(err); }
   });
@@ -208,26 +222,73 @@ function createWorkspaceRoutes({ tenantService, userService, auditService } = {}
       const { membership } = await requireMembership(req, req.params.tenantId);
       need('members:invite', membership);
       const body = req.body && typeof req.body === 'object' ? req.body : {};
-      const userId = typeof body.userId === 'string' ? body.userId.trim() : '';
+      const requestedUserId = typeof body.userId === 'string' ? body.userId.trim() : '';
+      const requestedEmail = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
       const role = typeof body.role === 'string' ? body.role.trim() : 'purchaser';
-      if (!userId) {
-        const err = new Error('userId is required to invite a member.');
+      if (!tenantService.ROLES[role]) {
+        const err = new Error('Unknown role.');
         err.statusCode = 400;
         err.code = 'VALIDATION_ERROR';
         throw err;
       }
-      const target = await userService.findById(userId);
+      let target = null;
+      if (requestedUserId) target = await userService.findById(requestedUserId);
+      else if (requestedEmail) target = await userService.findByEmail(requestedEmail);
       if (!target) {
-        const err = new Error('User not found.');
+        const err = new Error('No registered Mandate user matches that invitation. Invitees must sign in once before joining a workspace.');
         err.statusCode = 404;
         err.code = 'USER_NOT_FOUND';
         throw err;
       }
-      const created = await tenantService.addMembership({ tenantId: req.params.tenantId, userId, role, status: 'active', invitedByUserId: req.user.userId });
+      let created;
       try {
-        await auditService.recordEvent({ tenantId: req.params.tenantId, eventType: 'MEMBERSHIP_CREATED', actorId: req.user.userId, metadata: { role } });
+        created = await tenantService.addMembership({
+          tenantId: req.params.tenantId,
+          userId: target.userId,
+          role,
+          status: 'invited',
+          invitedByUserId: req.user.userId,
+          invitedEmail: target.email,
+        });
+      } catch (err) {
+        if (err && err.code === 'MEMBERSHIP_EXISTS') {
+          err.statusCode = 409;
+          err.message = 'This user is already a member or has a pending invitation.';
+        }
+        throw err;
+      }
+      try {
+        await auditService.recordEvent({ tenantId: req.params.tenantId, eventType: 'MEMBERSHIP_INVITED', actorId: req.user.userId, metadata: { role, invitedUserId: target.userId } });
       } catch { /* ignore */ }
-      return res.status(201).json({ success: true, data: { membership: { userId: created.userId, role: created.role, status: created.status } } });
+      return res.status(201).json({ success: true, data: { membership: { userId: created.userId, role: created.role, status: created.status, invitedEmail: created.invitedEmail } } });
+    } catch (err) { next(err); }
+  });
+
+  // Accept an invitation for the authenticated user. No active tenant context is
+  // required (the invite itself is the pending context).
+  router.post('/workspaces/:tenantId/members/accept', async (req, res, next) => {
+    try {
+      const membership = await tenantService.getMembership({ tenantId: req.params.tenantId, userId: req.user.userId });
+      if (!membership || membership.status !== 'invited') {
+        const err = new Error('No pending invitation was found for this workspace.');
+        err.statusCode = 404;
+        err.code = 'INVITATION_NOT_FOUND';
+        throw err;
+      }
+      const userEmail = String(req.user.email || '').trim().toLowerCase();
+      const invitedEmail = String(membership.invitedEmail || '').trim().toLowerCase();
+      if (invitedEmail && invitedEmail !== userEmail) {
+        const err = new Error('This invitation was issued to a different account.');
+        err.statusCode = 403;
+        err.code = 'INVITATION_MISMATCH';
+        throw err;
+      }
+      const updated = await tenantService.setMembershipStatus({ tenantId: req.params.tenantId, userId: req.user.userId, status: 'active' });
+      try {
+        await auditService.recordEvent({ tenantId: req.params.tenantId, eventType: 'MEMBERSHIP_ACCEPTED', actorId: req.user.userId, metadata: { role: updated.role } });
+      } catch { /* ignore */ }
+      const tenant = await tenantService.getTenant(req.params.tenantId);
+      return res.json({ success: true, data: { tenant, membership: { userId: updated.userId, role: updated.role, status: updated.status } } });
     } catch (err) { next(err); }
   });
 

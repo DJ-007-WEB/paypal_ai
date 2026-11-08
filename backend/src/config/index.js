@@ -218,6 +218,18 @@ function loadConfig(env = process.env) {
     if (!GOOGLE_GMAIL_SCOPES) {
       throw new Error('GOOGLE_GMAIL_SCOPES must list the narrowest approved scopes when GOOGLE_GMAIL_ENABLED=true (never leave empty when enabled).');
     }
+    const allowedGmailScopes = new Set([
+      'openid', 'email', 'profile',
+      'https://www.googleapis.com/auth/gmail.readonly',
+    ]);
+    for (const scope of GOOGLE_GMAIL_SCOPES.split(/\s+/).filter(Boolean)) {
+      if (!allowedGmailScopes.has(scope)) {
+        throw new Error(`GOOGLE_GMAIL_SCOPES contains a scope broader than read-only mailbox access: ${scope}`);
+      }
+    }
+    if (!GOOGLE_GMAIL_SCOPES.split(/\s+/).includes('https://www.googleapis.com/auth/gmail.readonly')) {
+      throw new Error('GOOGLE_GMAIL_SCOPES must include https://www.googleapis.com/auth/gmail.readonly when Gmail is enabled.');
+    }
   }
 
   // --- Advisory AI (optional; disabled by default) ---
@@ -233,6 +245,39 @@ function loadConfig(env = process.env) {
     if (!AI_API_KEY) throw new Error('AI_API_KEY is required when AI_ENABLED=true.');
     if (!AI_BASE_URL) throw new Error('AI_BASE_URL is required when AI_ENABLED=true.');
     if (!AI_MODEL) throw new Error('AI_MODEL is required when AI_ENABLED=true.');
+  }
+
+  // --- PayPal (Sandbox only; fail closed) ---
+  const PAYPAL_ENV = String(env.PAYPAL_ENV || 'sandbox').trim().toLowerCase();
+  if (PAYPAL_ENV !== 'sandbox') {
+    throw new Error('PAYPAL_ENV must be "sandbox". Live PayPal is intentionally unsupported by this deployment.');
+  }
+  const PAYPAL_CLIENT_ID = env.PAYPAL_CLIENT_ID ? String(env.PAYPAL_CLIENT_ID).trim() : '';
+  const PAYPAL_CLIENT_SECRET = env.PAYPAL_CLIENT_SECRET ? String(env.PAYPAL_CLIENT_SECRET) : '';
+  const PAYPAL_WEBHOOK_ID = env.PAYPAL_WEBHOOK_ID ? String(env.PAYPAL_WEBHOOK_ID).trim() : '';
+  if (Boolean(PAYPAL_CLIENT_ID) !== Boolean(PAYPAL_CLIENT_SECRET)) {
+    throw new Error('PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET must both be set, or both be empty.');
+  }
+  const PAYPAL_ENABLED = Boolean(PAYPAL_CLIENT_ID && PAYPAL_CLIENT_SECRET);
+  const paypalFrontendBase = FRONTEND_BASE_URL || 'http://localhost:5173';
+  const defaultPayPalReturn = `${paypalFrontendBase}/app/approvals?paypal=return`;
+  const defaultPayPalCancel = `${paypalFrontendBase}/app/approvals?paypal=cancel`;
+  const PAYPAL_RETURN_URL = parseUrl(env.PAYPAL_RETURN_URL || defaultPayPalReturn, {
+    name: 'PAYPAL_RETURN_URL', required: false, isProd,
+  });
+  const PAYPAL_CANCEL_URL = parseUrl(env.PAYPAL_CANCEL_URL || defaultPayPalCancel, {
+    name: 'PAYPAL_CANCEL_URL', required: false, isProd,
+  });
+  for (const [name, value] of [['PAYPAL_RETURN_URL', PAYPAL_RETURN_URL], ['PAYPAL_CANCEL_URL', PAYPAL_CANCEL_URL]]) {
+    if (value) {
+      const origin = new URL(value).origin;
+      if (!FRONTEND_ORIGIN.includes(origin)) {
+        throw new Error(`${name} must belong to a configured FRONTEND_ORIGIN. Got: ${value}`);
+      }
+    }
+  }
+  if (isProd && PAYPAL_ENABLED && !PAYPAL_WEBHOOK_ID) {
+    throw new Error('PAYPAL_WEBHOOK_ID is required in production when PayPal Sandbox is enabled.');
   }
 
   // --- Encryption ---
@@ -251,8 +296,11 @@ function loadConfig(env = process.env) {
       throw new Error('TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key or 64-char hex when set. Prefer managed KMS in production.');
     }
   }
-  if (isProd && GOOGLE_GMAIL_ENABLED && !TOKEN_ENCRYPTION_KEY && !KMS_KEY_ID) {
-    throw new Error('Token encryption (TOKEN_ENCRYPTION_KEY or KMS_KEY_ID) is required in production when GOOGLE_GMAIL_ENABLED=true.');
+  if (isProd && GOOGLE_GMAIL_ENABLED && !TOKEN_ENCRYPTION_KEY) {
+    throw new Error('TOKEN_ENCRYPTION_KEY is required in production when GOOGLE_GMAIL_ENABLED=true. KMS_KEY_ID is not implemented by this deployment.');
+  }
+  if (KMS_KEY_ID && !TOKEN_ENCRYPTION_KEY) {
+    console.warn('[CONFIG] KMS_KEY_ID is set but no KMS client is implemented; token encryption is unavailable until TOKEN_ENCRYPTION_KEY is set.');
   }
 
   // --- Abuse protection / limits ---
@@ -278,6 +326,7 @@ function loadConfig(env = process.env) {
     GOOGLE_OIDC_ENABLED, GOOGLE_OIDC_CLIENT_ID, GOOGLE_OIDC_REDIRECT_URI,
     GOOGLE_OIDC_ISSUER, GOOGLE_OIDC_SCOPES,
     GOOGLE_GMAIL_ENABLED, GOOGLE_GMAIL_CLIENT_ID, GOOGLE_GMAIL_REDIRECT_URI, GOOGLE_GMAIL_SCOPES,
+    PAYPAL_ENABLED, PAYPAL_ENV, PAYPAL_CLIENT_ID, PAYPAL_RETURN_URL, PAYPAL_CANCEL_URL, PAYPAL_WEBHOOK_ID,
     AI_ENABLED, AI_API_KEY, AI_BASE_URL, AI_MODEL, AI_TIMEOUT_MS, AI_MAX_INPUT_CHARS,
     TOKEN_ENCRYPTION_KEY, KMS_KEY_ID,
     RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_REQUESTS,
@@ -291,6 +340,7 @@ function loadConfig(env = process.env) {
     SESSION_SECRET: config.SESSION_SECRET,
     GOOGLE_OIDC_CLIENT_SECRET,
     GOOGLE_GMAIL_CLIENT_SECRET,
+    PAYPAL_CLIENT_SECRET,
     AI_API_KEY,
     TOKEN_ENCRYPTION_KEY: config.TOKEN_ENCRYPTION_KEY,
     MONGODB_URI: config.MONGODB_URI,
@@ -322,13 +372,19 @@ function loadConfig(env = process.env) {
       GOOGLE_GMAIL_ENABLED: config.GOOGLE_GMAIL_ENABLED,
       GOOGLE_GMAIL_REDIRECT_URI: config.GOOGLE_GMAIL_REDIRECT_URI,
       GOOGLE_GMAIL_SCOPES_SET: Boolean(config.GOOGLE_GMAIL_SCOPES),
+      PAYPAL_ENABLED: config.PAYPAL_ENABLED,
+      PAYPAL_ENV: config.PAYPAL_ENV,
+      PAYPAL_RETURN_URL: config.PAYPAL_RETURN_URL,
+      PAYPAL_CANCEL_URL: config.PAYPAL_CANCEL_URL,
+      PAYPAL_WEBHOOK_CONFIGURED: Boolean(config.PAYPAL_WEBHOOK_ID),
       AI_ENABLED: config.AI_ENABLED,
       AI_CONFIGURED: Boolean(config.AI_API_KEY && config.AI_BASE_URL && config.AI_MODEL),
       AI_MODEL: config.AI_ENABLED ? config.AI_MODEL : null,
       AI_TIMEOUT_MS: config.AI_TIMEOUT_MS,
       AI_MAX_INPUT_CHARS: config.AI_MAX_INPUT_CHARS,
       KMS_CONFIGURED: Boolean(config.KMS_KEY_ID),
-      TOKEN_ENCRYPTION_CONFIGURED: Boolean(config.TOKEN_ENCRYPTION_KEY || config.KMS_KEY_ID),
+      KMS_IMPLEMENTED: false,
+      TOKEN_ENCRYPTION_CONFIGURED: Boolean(config.TOKEN_ENCRYPTION_KEY),
       RATE_LIMIT_WINDOW_MS: config.RATE_LIMIT_WINDOW_MS,
       RATE_LIMIT_MAX_REQUESTS: config.RATE_LIMIT_MAX_REQUESTS,
       AUTH_RATE_LIMIT_MAX_REQUESTS: config.AUTH_RATE_LIMIT_MAX_REQUESTS,
@@ -346,8 +402,11 @@ function loadConfig(env = process.env) {
       oidc: config.GOOGLE_OIDC_ENABLED ? 'enabled' : 'disabled',
       gmail: config.GOOGLE_GMAIL_ENABLED ? 'enabled' : 'disabled',
       ai: config.AI_ENABLED ? 'enabled' : 'disabled',
+      paypal: config.PAYPAL_ENABLED ? `sandbox${config.PAYPAL_WEBHOOK_ID ? '+webhook' : ''}` : 'disabled',
       sessionStore: 'server-side',
-      tokenEncryption: config.KMS_KEY_ID ? 'kms' : (config.TOKEN_ENCRYPTION_KEY ? 'local-key' : 'not-configured'),
+      // KMS is not implemented in this deployment; KMS_KEY_ID alone must never be
+      // reported as available encryption.
+      tokenEncryption: config.TOKEN_ENCRYPTION_KEY ? 'local-key' : 'not-configured',
     };
   }
 
