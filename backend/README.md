@@ -1,51 +1,71 @@
 # Mandate Backend API
 
+Express + MongoDB API for Mandate. See the repository root `README.md` for full deployment instructions.
+
 ## Prerequisites
+
 - Node.js 18.18.0 or later
 - npm 9+
-- A reachable MongoDB instance
+- A reachable MongoDB instance (production), or the in-memory stores used by tests
 
 ## Installation
-From the backend directory:
+
 ```bash
-npm install
+cd backend
+npm ci
+cp ../.env.example .env
+npm test
+npm run dev
 ```
 
 ## Environment configuration
-Copy the example environment file to the backend directory and fill in secrets locally:
-```bash
-cp backend/.env.example backend/.env
-```
-Set `MONGODB_URI` in `backend/.env` to your connection string. Do not commit or share that file (`.env` is git-ignored; only `.env.example` with placeholders is committed).
 
-See `backend/.env.example` for every required variable (runtime, session, Google OIDC sign-in, optional Gmail mailbox connection, encryption, rate limits, logging). Key rules:
-- `GOOGLE_OIDC_ENABLED=false` until client ID/secret + exact `GOOGLE_OIDC_REDIRECT_URI` are registered in Google Cloud Console. Missing credentials never enable demo auth — protected routes fail closed with 401.
-- `GOOGLE_GMAIL_ENABLED=false` until mailbox scopes, credentials, callback, and token encryption (`TOKEN_ENCRYPTION_KEY` or `KMS_KEY_ID`) are deliberately configured. Sign-in scopes stay identity-only (`openid email profile`).
-- Production startup rejects insecure config: HTTP base/callback URLs, `SESSION_COOKIE_SECURE=false`, weak `SESSION_SECRET`, localhost `FRONTEND_ORIGIN`, or blind `TRUST_PROXY=true`.
-- Never prefix server secrets with `VITE_*` and never place secrets in frontend code, browser storage, URLs, or logs.
+Set `MONGODB_URI` and the other values in `backend/.env` (or Render environment variables). Never commit `.env`; only `.env.example` with placeholders is committed.
 
-MongoDB is required at startup. Vendor offers are read from the `vendorOffers` collection (tenant-scoped `{ tenantId, offerId }`). Identity (`users`), workspaces (`tenants`), memberships (`memberships`), sessions (`sessions`), and Gmail connections (`gmailConnections`) are now durable collections with tenant-aware indexes. See `backend/scripts/migrate-tenant-isolation.js --dry-run` before building compound indexes on legacy data — never auto-assign legacy records to one tenant.
+Key rules:
+
+- `GOOGLE_OIDC_ENABLED=false` until the client ID/secret and exact redirect URI are registered. Missing credentials never enable fake auth — protected routes fail closed with 401.
+- `GOOGLE_GMAIL_ENABLED=false` until credentials, callback, the read-only scope, and `TOKEN_ENCRYPTION_KEY` are configured. Sign-in scopes stay identity-only.
+- `PAYPAL_ENV=sandbox` only. Live PayPal is rejected at startup. Credentials must be paired, and `PAYPAL_WEBHOOK_ID` is required in production when PayPal is enabled.
+- `KMS_KEY_ID` alone is not implemented. Set `TOKEN_ENCRYPTION_KEY` (base64 32-byte key or 64-char hex) to encrypt Gmail refresh tokens.
+- Production startup rejects insecure configuration: HTTP base/callback URLs, `SESSION_COOKIE_SECURE=false`, weak `SESSION_SECRET`, localhost `FRONTEND_ORIGIN`, or blind `TRUST_PROXY=true`.
+- Never prefix server secrets with `VITE_*` and never place them in frontend code, browser storage, URLs, or logs.
+
+MongoDB collections used in production: `vendorOffers`, `users`, `tenants`, `memberships`, `sessions`, `purchases`, `auditEvents`, `gmailConnections`, `oauthTransactions`, `paypalWebhookEvents`. Indexes are created in `src/server.js`. `scripts/migrate-tenant-isolation.js --dry-run` should be reviewed before applying compound indexes to legacy data.
+
+If Mongo is unreachable, persistence-backed services fail closed rather than silently claiming a write succeeded. Tests use explicit in-memory fakes.
 
 ## Commands
+
 ```bash
-npm run dev
-npm start
-npm test
+npm run dev    # node --watch src/server.js
+npm start      # node src/server.js
+npm test       # node --test tests/*.test.js
 ```
 
 ## API endpoints
+
 - `GET /api/health` (public)
-- `GET /api/auth/google` → Google OIDC start (501 when `GOOGLE_OIDC_ENABLED=false`); `GET /api/auth/google/callback`; `GET /api/auth/session`; `GET /api/auth/csrf`; `POST /api/auth/logout`
-- `GET /api/workspaces/me`, `GET /api/workspaces/current`, `POST /api/workspaces`, `GET/PATCH /api/workspaces/:tenantId`, member invite/update, `GET/POST /api/workspaces/:tenantId/business-email[/verify]`
-- `GET /api/vendors` (requires `vendors:read` + server-resolved tenant)
-- `POST /api/vendors/import` (requires `vendors:import`; per-tenant quotas + `Idempotency-Key`/`importId` replay; payload `tenantId` never trusted)
-- `POST /api/purchases/evaluate` (requires `purchases:create`); `GET /api/purchases/:purchaseId` and `GET /api/purchases` (require `purchases:read`; cross-tenant IDs return generic 404)
-- `GET /api/audit/events` (requires `audit:read`, tenant-scoped)
-- `GET /api/integrations/google-gmail/status|connect|callback`, `POST /api/integrations/google-gmail/disconnect` (disabled with 501 until `GOOGLE_GMAIL_ENABLED`; separate consent from sign-in)
-- Approval, payment and mandate routes intentionally return 501. No real payment authorization or execution is active (`paymentAuthorized: false` throughout).
+- `GET /api/auth/google`, `GET /api/auth/google/callback`, `GET /api/auth/session`, `GET /api/auth/csrf`, `POST /api/auth/logout`
+- `GET /api/workspaces/me`, `GET /api/workspaces/current`, `POST /api/workspaces`, `GET/PATCH /api/workspaces/:tenantId`
+- `GET/POST /api/workspaces/:tenantId/members`, `POST /api/workspaces/:tenantId/members/accept`, `PATCH /api/workspaces/:tenantId/members/:userId`, `GET /api/workspaces/invitations`
+- `GET/POST /api/workspaces/:tenantId/business-email[/verify]`
+- `GET /api/vendors` (`vendors:read`), `POST /api/vendors/import` (`vendors:import`)
+- `POST /api/purchases/evaluate` (`purchases:create`), `GET /api/purchases` and `GET /api/purchases/:purchaseId` (`purchases:read`)
+- `POST /api/purchases/interpret`, `POST /api/purchases/:purchaseId/explain`
+- `GET /api/audit/events` (`audit:read`)
+- `GET /api/approvals/pending` (`purchases:read`)
+- `POST /api/approvals/purchase/:purchaseId/approve|reject` (`purchases:approve`)
+- `POST /api/payments/create|capture|cancel/:purchaseId` (`purchases:approve`), `GET /api/payments/status/:purchaseId` (`purchases:read`)
+- `POST /api/payments/webhook` (public by design; PayPal signature verification, no session/CSRF)
+- `GET /api/integrations/google-gmail/status|connect|callback`, `POST /api/integrations/google-gmail/disconnect`
+
+Approval and payment routes are active. Nothing is marked paid until PayPal returns a verified capture whose amount, currency, purchase, and tenant match server-side records.
 
 ## Vendor offer import
+
 Send JSON to `POST /api/vendors/import`:
+
 ```json
 {
   "offers": [{
@@ -67,21 +87,32 @@ Send JSON to `POST /api/vendors/import`:
   }]
 }
 ```
-Amounts are integer minor units (INR paise). Shipping, tax and fees must be explicit, even when their value is zero. The importer validates input and upserts by `offerId`.
+
+Amounts are integer minor units (INR paise). Shipping, tax, and fees must be explicit, even when zero. The importer validates input and upserts by `{ tenantId, offerId }`.
 
 ## Request flow
+
 1. Express validates the incoming purchase request.
-2. Vendor service queries active offers in MongoDB for the requested product.
+2. Vendor service queries active offers for the server-resolved tenant.
 3. The deterministic decision engine ranks eligible offers.
 4. A separate policy service validates hard constraints.
-5. Audit events and purchase records are currently stored in memory.
-6. The response returns a recommendation and policy findings, never payment authorization.
+5. The purchase record is stored with `approvalStatus: PENDING`, `paymentStatus: NONE`.
+6. An authorized approver records a decision (single-use CAS).
+7. Payment order creation uses the stored recommendation amount, not the budget ceiling.
+8. Capture/webhook verification is required before `paymentStatus: COMPLETED`.
+
+## Tests
+
+```bash
+npm test
+```
+
+The suite covers authentication, CSRF, tenant isolation, permissions, vendor import, decision-engine behavior, approval single-use semantics, recommendation-based payment amounts, unverified-capture behavior, webhook signature failure, and sandbox-only configuration. It exits naturally.
 
 ## Limitations / known issues
-- Without MongoDB, services fall back to in-memory stores (tests) that reset on restart; production must use MongoDB with the tenant-aware indexes created in `src/server.js`.
-- Legacy records without `tenantId` are quarantined by `scripts/migrate-tenant-isolation.js` — no automatic default-tenant assignment. Run `--dry-run`, back up, reconcile ownership, then build compound indexes.
-- Session store defaults to in-memory unless a `sessions` collection is wired (production should use a shared durable store; a warning is logged otherwise).
-- Gmail mailbox features are scaffold-only until credentials, scopes, callback, token encryption, and provider tests are configured; status reports `enabled: false` until then.
-- Approval and payment execution remain disabled (501; `paymentAuthorized: false`).
-- No external AI call or real PayPal payment flow is active.
-- Threat model (for PR): untrusted client tenant IDs, session hijacking, OAuth replay, cross-tenant ID guessing, overly broad Gmail scopes, secret leakage via logs/responses, and import abuse are mitigated by server-resolved tenant context, HttpOnly+Secure+SameSite cookies + rotation + CSRF, state/nonce/PKCE + single-use transactions + exact redirect allowlists, generic 404s, narrow identity-only login scopes + encrypted mailbox tokens, redacted logging/safe errors, and rate limits + per-tenant import quotas. Deferred: shared session store in multi-instance prod, KMS envelope encryption, dependency/secret scanning in CI, encrypted backups + restore rehearsal, and alerting on repeated authz failures.
+
+- In-memory stores are used only in tests. Production requires MongoDB.
+- No managed KMS client exists; only `TOKEN_ENCRYPTION_KEY` encrypts tokens at rest.
+- Business email verification is `owner-attested` unless it matches the signed-in verified Google identity.
+- Gmail is read-only and disabled unless fully configured.
+- PayPal is Sandbox-only.
