@@ -1,312 +1,372 @@
 'use strict';
 
-const https = require('node:https');
-const crypto = require('node:crypto');
-
 /**
- * PayPal Sandbox Orders API integration.
+ * PayPal Orders v2 / Payments API client (Sandbox only).
  *
- * - Creates an order for a given amount (in minor units) and currency.
- * - Generates a unique invoice/identifier for idempotency.
- * - Returns the PayPal order ID and approval URL for the frontend to redirect.
- * - Verifies the completed order against the purchase record.
- * - Never authorizes real payment; paymentAuthorized remains false.
- * - All amounts are computed server-side from trusted purchase data.
+ * Security properties:
+ * - Live PayPal is rejected by configuration; this module never falls back live.
+ * - Amounts are computed server-side in minor units and converted using the
+ *   currency's ISO exponent (no unconditional /100).
+ * - `custom_id` carries the purchaseId; `invoice_id` carries tenant+purchase
+ *   correlation. Webhook events are correlated only through these fields plus
+ *   a server-side order lookup, never through client-supplied values.
+ * - Webhook signatures are verified with PayPal's official
+ *   /v1/notifications/verify-webhook-signature endpoint, not a home-grown HMAC.
+ * - No credentials or provider payloads are logged.
  */
 
-const EXPIRY_SECONDS = 86400; // 24 hours
-const INTENT = 'CAPTURE'; // Order intent: capture the amount immediately
+const PAYPAL_SANDBOX_BASE = 'https://api.sandbox.paypal.com';
+const REQUEST_TIMEOUT_MS = 15000;
+const TOKEN_SAFETY_WINDOW_MS = 60 * 1000;
 
-function parseEnv() {
-  const isSandbox = String(process.env.PAYPAL_ENV || 'sandbox').toLowerCase() === 'sandbox';
-  const base = isSandbox ? 'https://api.sandbox.paypal.com' : 'https://api.paypal.com';
-  return {
-    base,
-    clientId: process.env.PAYPAL_CLIENT_ID || '',
-    clientSecret: process.env.PAYPAL_CLIENT_SECRET || '',
-    returnUrl: process.env.PAYPAL_RETURN_URL || 'http://localhost:5173',
-    cancelUrl: process.env.PAYPAL_CANCEL_URL || 'http://localhost:5173',
-    isSandbox,
-  };
+// ISO 4217 exponents used by PayPal. Default is 2.
+const ZERO_DECIMAL = new Set(['HUF', 'JPY', 'TWD', 'KRW']);
+const THREE_DECIMAL = new Set(['BHD', 'JOD', 'KWD', 'OMR', 'TND']);
+
+function currencyExponent(currency) {
+  const code = String(currency || '').toUpperCase();
+  if (ZERO_DECIMAL.has(code)) return 0;
+  if (THREE_DECIMAL.has(code)) return 3;
+  return 2;
 }
 
-function getAccessToken({ base, clientId, clientSecret } = parseEnv()) {
-  return new Promise((resolve, reject) => {
-    const postData = new URLSearchParams();
-    postData.append('grant_type', 'client_credentials');
-    const req = https.request(
-      {
-        host: new URL(base).host,
-        path: '/v1/oauth2/token',
+function toPayPalAmount(amountMinor, currency) {
+  const n = Number(amountMinor);
+  if (!Number.isSafeInteger(n) || n <= 0) throw paypalError('INVALID_AMOUNT', 'Amount must be a positive integer in minor units.', 400);
+  const exponent = currencyExponent(currency);
+  const value = exponent === 0 ? String(n) : (n / (10 ** exponent)).toFixed(exponent);
+  return { currency_code: String(currency || '').toUpperCase(), value };
+}
+
+function fromPayPalAmount(value, currency) {
+  const exponent = currencyExponent(currency);
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return NaN;
+  return Math.round(numeric * (10 ** exponent));
+}
+
+function paypalError(code, message, statusCode = 502, extra = {}) {
+  const err = new Error(message);
+  err.code = code;
+  err.statusCode = statusCode;
+  Object.assign(err, extra);
+  return err;
+}
+
+function invoiceIdFor(tenantId, purchaseId) {
+  return `mandate_${tenantId}_${purchaseId}`.slice(0, 127);
+}
+
+function createPayPalService({ config } = {}) {
+  if (!config) throw new Error('PayPal service requires config.');
+
+  const secrets = config.getSecrets ? config.getSecrets() : {};
+  const clientId = config.PAYPAL_CLIENT_ID || '';
+  const clientSecret = secrets.PAYPAL_CLIENT_SECRET || '';
+  const enabled = Boolean(config.PAYPAL_ENABLED && clientId && clientSecret);
+  const base = PAYPAL_SANDBOX_BASE;
+
+  let tokenCache = { token: null, expiresAt: 0 };
+
+  function isEnabled() { return enabled; }
+
+  function requireEnabled() {
+    if (!enabled) {
+      throw paypalError('PAYPAL_NOT_CONFIGURED', 'PayPal Sandbox is not configured for this deployment.', 503);
+    }
+  }
+
+  async function fetchJson(path, { method = 'GET', body, headers = {}, requestId } = {}) {
+    let response;
+    try {
+      response = await fetch(`${base}${path}`, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw paypalError('PAYPAL_UNAVAILABLE', 'Could not reach PayPal Sandbox. Please retry.', 502);
+    }
+
+    const text = await response.text();
+    let parsed = null;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = null; }
+
+    if (!response.ok) {
+      const issue = parsed?.details?.[0]?.issue || parsed?.name || 'PAYPAL_REQUEST_FAILED';
+      throw paypalError('PAYPAL_REQUEST_FAILED', 'PayPal rejected the request.', 502, {
+        providerStatus: response.status,
+        providerIssue: issue,
+        requestId: requestId || null,
+      });
+    }
+    return parsed || {};
+  }
+
+  async function getAccessToken() {
+    requireEnabled();
+    if (tokenCache.token && tokenCache.expiresAt > Date.now() + TOKEN_SAFETY_WINDOW_MS) return tokenCache.token;
+    const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+    let response;
+    try {
+      response = await fetch(`${base}/v1/oauth2/token`, {
         method: 'POST',
         headers: {
+          Authorization: `Basic ${credentials}`,
           'Content-Type': 'application/x-www-form-urlencoded',
-          Authorization: 'Basic ' + Buffer.from(clientId + ':' + clientSecret).toString('base64'),
         },
-      },
-      (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.access_token) resolve(parsed.access_token);
-            else reject(new Error('Invalid access token response: ' + data));
-          } catch (e) {
-            reject(e);
-          }
-        });
-      }
-    );
-    req.on('error', reject);
-    req.write(postData);
-    req.end();
-  });
-}
+        body: 'grant_type=client_credentials',
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch {
+      throw paypalError('PAYPAL_UNAVAILABLE', 'Could not reach PayPal Sandbox. Please retry.', 502);
+    }
+    const text = await response.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+    if (!response.ok || !data?.access_token) {
+      throw paypalError('PAYPAL_AUTH_FAILED', 'PayPal Sandbox authentication failed.', 502);
+    }
+    const expiresIn = Number(data.expires_in) > 0 ? Number(data.expires_in) : 300;
+    tokenCache = { token: data.access_token, expiresAt: Date.now() + expiresIn * 1000 };
+    return tokenCache.token;
+  }
 
-function buildHeader(accessToken) {
-  return { 'Content-Type': 'application/json', Authorization: 'Bearer ' + accessToken };
-}
+  async function authHeaders(extra = {}) {
+    const token = await getAccessToken();
+    return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...extra };
+  }
 
-/**
- * Create a PayPal order for a purchase.
- * The amount is calculated server-side from the purchase record's minor units.
- * The frontend must NOT supply any amount or payment details.
- *
- * @param {number} amountMinor - Total amount in minor units (e.g. INR paise) from the purchase record
- * @param {string} currency - 3-letter ISO currency code (e.g. 'INR')
- * @param {string} purchaseId - The mandate purchase ID for memo/description
- * @param {string} tenantId - The tenant ID for memo/description
- * @returns {Promise<Object>} PayPal order response
- */
-function createOrder({ amountMinor, currency, purchaseId, tenantId } = {}) {
-  return new Promise((resolve, reject) => {
-    if (!amountMinor || amountMinor <= 0) return reject(new Error('Invalid amountMinor'));
-    if (!currency || currency.length !== 3) return reject(new Error('Invalid currency'));
-
-    // Convert minor to major for PayPal (PayPal uses decimal major units)
-    const amountMajor = Number(amountMinor) / 100;
-    if (!Number.isFinite(amountMajor) || amountMajor <= 0) return reject(new Error('Amount out of range'));
-
-    const description = `Mandate purchase ${purchaseId} — tenant ${tenantId}`;
-
+  async function createOrder({ amountMinor, currency, purchaseId, tenantId } = {}) {
+    requireEnabled();
+    if (!purchaseId || !tenantId) throw paypalError('INVALID_ORDER', 'purchaseId and tenantId are required.', 400);
+    const amount = toPayPalAmount(amountMinor, currency);
     const order = {
-      intent: INTENT,
+      intent: 'CAPTURE',
       purchase_units: [
         {
           amount: {
-            currency_code: currency,
-            value: amountMajor.toFixed(2),
-            breakdown: {
-              item_total: {
-                currency_code: currency,
-                value: amountMajor.toFixed(2),
-              },
-            },
+            currency_code: amount.currency_code,
+            value: amount.value,
+            breakdown: { item_total: { currency_code: amount.currency_code, value: amount.value } },
           },
-          description: description,
-          invoice_id: `mandate_${purchaseId}_${crypto.randomBytes(4).toString('hex')}`,
-          custom_id: tenantId,  // <-- Add tenant ID for webhook/verification
+          description: `Mandate purchase ${purchaseId}`.slice(0, 127),
+          custom_id: String(purchaseId).slice(0, 127),
+          invoice_id: invoiceIdFor(tenantId, purchaseId),
         },
       ],
       application_context: {
-        return_url: parseEnv().returnUrl,
-        cancel_url: parseEnv().cancelUrl,
+        return_url: config.PAYPAL_RETURN_URL,
+        cancel_url: config.PAYPAL_CANCEL_URL,
         brand_name: 'Mandate',
         user_action: 'PAY_NOW',
       },
     };
-
-    const env = parseEnv();
-    if (!env.clientId || !env.clientSecret) return reject(new Error('PayPal credentials not configured.'));
-
-    getAccessToken({ base: env.base, clientId: env.clientId, clientSecret: env.clientSecret })
-      .then((token) => {
-        const req = https.request(
-          {
-            host: new URL(env.base).host,
-            path: '/v2/checkout/orders',
-            method: 'POST',
-            headers: buildHeader(token),
-          },
-          (res) => {
-            let data = '';
-            res.on('data', (chunk) => { data += chunk; });
-            res.on('end', () => {
-              try {
-                const parsed = JSON.parse(data);
-                if (parsed.id) resolve(parsed);
-                else reject(new Error('Order creation failed: ' + data));
-              } catch (e) {
-                reject(e);
-              }
-            });
-          }
-        );
-        req.on('error', reject);
-        req.write(JSON.stringify(order));
-        req.end();
-      })
-      .catch(reject);
-  });
-}
-
-/**
- * Capture a previously created PayPal order.
- * This is the second step after the user approves on PayPal.
- * Verifies the order matches the expected purchase before capturing.
- *
- * @param {string} orderId - The PayPal order ID
- * @param {number} expectedAmountMinor - Expected amount in minor units from the purchase record
- * @param {string} expectedCurrency - Expected currency code
- * @param {string} expectedTenantId - Expected tenant ID
- * @returns {Promise<Object>} Capture response
- */
-function captureOrder({ orderId, expectedAmountMinor, expectedCurrency, expectedTenantId } = {}) {
-  return new Promise((resolve, reject) => {
-    if (!orderId) return reject(new Error('Missing orderId'));
-
-    // First verify the order matches this purchase
-    return paypal.verifyOrder({ orderId, expectedAmountMinor, expectedCurrency, expectedTenantId }).then(
-      ({ valid, parsed }) => {
-        if (!valid) {
-          return reject(new Error('Order verification failed: amount or tenant mismatch.'));
-        }
-
-        const env = parseEnv();
-        getAccessToken({ base: env.base, clientId: env.clientId, clientSecret: env.clientSecret })
-          .then((token) => {
-            const req = https.request(
-              {
-                host: new URL(env.base).host,
-                path: `/v2/checkout/orders/${orderId}/capture`,
-                method: 'POST',
-                headers: buildHeader(token),
-              },
-              (res) => {
-                let data = '';
-                res.on('data', (chunk) => { data += chunk; });
-                res.on('end', () => {
-                  try {
-                    const parsed = JSON.parse(data);
-                    if (parsed.status === 'COMPLETED') resolve(parsed);
-                    else reject(new Error('Order not completed: ' + data));
-                  } catch (e) {
-                    reject(e);
-                  }
-                });
-              }
-            );
-            req.on('error', reject);
-            req.end();
-          })
-          .catch(reject);
-      }
-    ).catch(reject);
-  });
-}
-
-/**
- * Verify that a PayPal order matches the expected purchase amount and tenant.
- * Used by webhook handler or client-side validation.
- *
- * @param {string} orderId - PayPal order ID
- * @param {number} expectedAmountMinor - Expected amount in minor units from the purchase record
- * @param {string} expectedCurrency - Expected currency code
- * @param {string} expectedTenantId - Expected tenant ID
- * @returns {Promise<Object>} { valid: boolean, parsed: object }
- */
-function verifyOrder({ orderId, expectedAmountMinor, expectedCurrency, expectedTenantId } = {}) {
-  return new Promise((resolve, reject) => {
-    if (!orderId) return reject(new Error('Missing orderId'));
-
-    const env = parseEnv();
-    getAccessToken({ base: env.base, clientId: env.clientId, clientSecret: env.clientSecret })
-      .then((token) => {
-        const req = https.request(
-          {
-            host: new URL(env.base).host,
-            path: `/v2/checkout/orders/${orderId}`,
-            method: 'GET',
-            headers: buildHeader(token),
-          },
-          (res) => {
-            let data = '';
-            res.on('data', (chunk) => { data += chunk; });
-            res.on('end', () => {
-              try {
-                const parsed = JSON.parse(data);
-                const amount = parsed.purchase_units?.[0]?.amount;
-                const matchesAmount =
-                  amount &&
-                  amount.currency_code === expectedCurrency &&
-                  Number(amount.value) * 100 === expectedAmountMinor;
-                // Store tenantId in custom_id for later verification; if not set, compare via purchase record
-                const matchesTenant = parsed.custom_id === expectedTenantId;
-                resolve({ valid: matchesAmount && matchesTenant, parsed });
-              } catch (e) {
-                reject(e);
-              }
-            });
-          }
-        );
-        req.on('error', reject);
-        req.end();
-      })
-      .catch(reject);
-  });
-}
-
-/**
- * Verify PayPal webhook signature for security.
- * PayPal sends events to the registered webhook URL with a signature
- * in the PayPal-TRANSMISSION-SIG header and a timestamp in PayPal-TRANSMISSION-TIME.
- *
- * @param {string} reqBody - Raw request body
- * @param {string} signature - PayPal-TRANSMISSION-SIG header value
- * @param {string} timestamp - PayPal-TRANSMISSION-TIME header value
- * @returns {boolean} Whether the signature is valid
- */
-function verifyWebhookSignature(reqBody, signature, timestamp) {
-  if (!signature || !timestamp) return false;
-
-  const env = parseEnv();
-  // PayPal official webhook signature format: v1:<timestamp>:<raw_body>
-  const constructedString = `v1:${timestamp}:${reqBody}`;
-
-  // Use the client secret to verify the signature
-  const secret = Buffer.from(env.clientSecret, 'utf8');
-  const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(constructedString);
-  const digest = hmac.digest('hex');
-
-  return crypto.timingSafeEqual(Buffer.from(digest, 'hex'), Buffer.from(signature, 'hex'));
-}
-
-/**
- * Parse PayPal webhook event and extract relevant data.
- *
- * @param {string} reqBody - Raw request body from PayPal webhook
- * @returns {Object} Parsed event data { eventType, purchaseId, orderId, status }
- */
-function parseWebhookEvent(reqBody) {
-  let parsed;
-  try {
-    parsed = JSON.parse(reqBody);
-  } catch (e) {
-    return { error: 'Invalid JSON body' };
+    const data = await fetchJson('/v2/checkout/orders', {
+      method: 'POST',
+      headers: await authHeaders({ 'PayPal-Request-Id': `create-${invoiceIdFor(tenantId, purchaseId)}`.slice(0, 100) }),
+      body: order,
+    });
+    if (!data.id) throw paypalError('PAYPAL_ORDER_INVALID', 'PayPal did not return an order ID.', 502);
+    return data;
   }
 
-  const eventType = parsed.event_type;
-  const resource = parsed.resource || {};
+  async function getOrder(orderId) {
+    requireEnabled();
+    if (!orderId) throw paypalError('INVALID_ORDER', 'orderId is required.', 400);
+    return fetchJson(`/v2/checkout/orders/${encodeURIComponent(orderId)}`, {
+      headers: await authHeaders(),
+    });
+  }
+
+  function verifyOrderShape({ order, expectedAmountMinor, expectedCurrency, expectedPurchaseId, expectedTenantId }) {
+    const unit = order?.purchase_units?.[0];
+    const amount = unit?.amount;
+    const reasons = [];
+
+    if (!unit || !amount) reasons.push('missing_purchase_unit');
+    if (expectedPurchaseId && String(unit?.custom_id || '') !== String(expectedPurchaseId)) reasons.push('purchase_mismatch');
+    if (expectedTenantId && String(unit?.invoice_id || '') !== invoiceIdFor(expectedTenantId, expectedPurchaseId)) reasons.push('tenant_mismatch');
+    if (expectedCurrency && String(amount?.currency_code || '').toUpperCase() !== String(expectedCurrency).toUpperCase()) reasons.push('currency_mismatch');
+    if (expectedAmountMinor !== undefined && fromPayPalAmount(amount?.value, expectedCurrency || amount?.currency_code) !== Number(expectedAmountMinor)) {
+      reasons.push('amount_mismatch');
+    }
+
+    return {
+      valid: reasons.length === 0,
+      reasons,
+      amountMinor: fromPayPalAmount(amount?.value, amount?.currency_code),
+      currency: amount?.currency_code || null,
+      orderId: order?.id || null,
+      status: order?.status || null,
+    };
+  }
+
+  async function verifyOrder({ orderId, expectedAmountMinor, expectedCurrency, expectedPurchaseId, expectedTenantId } = {}) {
+    requireEnabled();
+    const order = await getOrder(orderId);
+    const result = verifyOrderShape({ order, expectedAmountMinor, expectedCurrency, expectedPurchaseId, expectedTenantId });
+    return { ...result, order };
+  }
+
+  async function captureOrder({ orderId, expectedAmountMinor, expectedCurrency, expectedPurchaseId, expectedTenantId } = {}) {
+    requireEnabled();
+    if (!orderId) throw paypalError('INVALID_ORDER', 'orderId is required.', 400);
+
+    const verification = await verifyOrder({ orderId, expectedAmountMinor, expectedCurrency, expectedPurchaseId, expectedTenantId });
+    if (!verification.valid) {
+      throw paypalError('ORDER_MISMATCH', 'PayPal order does not match this purchase.', 400, { details: verification.reasons });
+    }
+    if (verification.status === 'COMPLETED') {
+      return {
+        status: 'COMPLETED',
+        order: verification.order,
+        amountMinor: verification.amountMinor,
+        currency: verification.currency,
+        captureId: null,
+        alreadyCaptured: true,
+      };
+    }
+
+    let data;
+    try {
+      data = await fetchJson(`/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, {
+        method: 'POST',
+        headers: await authHeaders({ 'PayPal-Request-Id': `capture-${orderId}`.slice(0, 100) }),
+        body: {},
+      });
+    } catch (err) {
+      // A retry after a lost response can surface ORDER_ALREADY_CAPTURED.
+      if (err.providerIssue === 'ORDER_ALREADY_CAPTURED') {
+        const latest = await getOrder(orderId);
+        const recheck = verifyOrderShape({
+          order: latest,
+          expectedAmountMinor,
+          expectedCurrency,
+          expectedPurchaseId,
+          expectedTenantId,
+        });
+        if (recheck.valid && latest?.status === 'COMPLETED') {
+          const capture = latest?.purchase_units?.[0]?.payments?.captures?.[0];
+          return {
+            status: 'COMPLETED',
+            order: latest,
+            amountMinor: recheck.amountMinor,
+            currency: recheck.currency,
+            captureId: capture?.id || null,
+            alreadyCaptured: true,
+          };
+        }
+      }
+      throw err;
+    }
+
+    if (data?.status !== 'COMPLETED') {
+      throw paypalError('PAYMENT_NOT_COMPLETED', 'PayPal did not complete the capture.', 502, { providerStatus: data?.status || null });
+    }
+    const unit = data?.purchase_units?.[0];
+    const capture = unit?.payments?.captures?.[0];
+    if (!capture || capture.status !== 'COMPLETED') {
+      throw paypalError('PAYMENT_NOT_COMPLETED', 'PayPal did not complete the capture.', 502);
+    }
+    const capturedMinor = fromPayPalAmount(capture?.amount?.value, capture?.amount?.currency_code);
+    if (capturedMinor !== Number(expectedAmountMinor) || String(capture?.amount?.currency_code || '').toUpperCase() !== String(expectedCurrency).toUpperCase()) {
+      throw paypalError('CAPTURE_MISMATCH', 'Captured amount did not match the approved purchase.', 502);
+    }
+    return {
+      status: 'COMPLETED',
+      order: data,
+      amountMinor: capturedMinor,
+      currency: capture.amount.currency_code,
+      captureId: capture.id || null,
+      alreadyCaptured: false,
+    };
+  }
+
+  async function verifyWebhookSignature({ headers = {}, rawBody } = {}) {
+    if (!enabled || !config.PAYPAL_WEBHOOK_ID) return false;
+    if (!rawBody || typeof rawBody !== 'string') return false;
+    let event;
+    try { event = JSON.parse(rawBody); } catch { return false; }
+    const transmissionId = headers['paypal-transmission-id'];
+    const transmissionTime = headers['paypal-transmission-time'];
+    const certUrl = headers['paypal-cert-url'];
+    const authAlgo = headers['paypal-auth-algo'];
+    const transmissionSig = headers['paypal-transmission-sig'];
+    if (!transmissionId || !transmissionTime || !certUrl || !authAlgo || !transmissionSig) return false;
+
+    try {
+      const data = await fetchJson('/v1/notifications/verify-webhook-signature', {
+        method: 'POST',
+        headers: await authHeaders(),
+        body: {
+          transmission_id: transmissionId,
+          transmission_time: transmissionTime,
+          cert_url: certUrl,
+          auth_algo: authAlgo,
+          transmission_sig: transmissionSig,
+          webhook_id: config.PAYPAL_WEBHOOK_ID,
+          webhook_event: event,
+        },
+      });
+      return data?.verification_status === 'SUCCESS';
+    } catch {
+      return false;
+    }
+  }
+
+  function parseWebhookEvent(rawBody) {
+    let parsed;
+    try { parsed = JSON.parse(rawBody); } catch { return { error: 'invalid_json' }; }
+    const resource = parsed?.resource || {};
+    const related = resource?.supplementary_data?.related_ids || {};
+    const unit = Array.isArray(resource?.purchase_units) ? resource.purchase_units[0] : null;
+    const capture = resource?.amount && resource?.id
+      ? resource
+      : (resource?.payments?.captures?.[0] || unit?.payments?.captures?.[0] || null);
+
+    const orderId = related.order_id
+      || (String(parsed?.event_type || '').startsWith('CHECKOUT.ORDER') ? resource?.id : null)
+      || (String(parsed?.event_type || '').includes('ORDER') ? resource?.id : null)
+      || null;
+    const purchaseId = resource?.custom_id || unit?.custom_id || capture?.custom_id || null;
+    const invoiceId = resource?.invoice_id || unit?.invoice_id || capture?.invoice_id || null;
+    const amount = capture?.amount || resource?.amount || unit?.amount || null;
+
+    return {
+      eventId: parsed?.id || null,
+      eventType: parsed?.event_type || null,
+      resourceType: parsed?.resource_type || null,
+      orderId,
+      purchaseId,
+      invoiceId,
+      status: resource?.status || capture?.status || null,
+      captureId: capture?.id || null,
+      amountMinor: amount ? fromPayPalAmount(amount.value, amount.currency_code) : null,
+      currency: amount?.currency_code || null,
+      resource,
+    };
+  }
 
   return {
-    eventType,
-    purchaseId: resource.custom_id || null,
-    orderId: resource.id || null,
-    status: resource.status || null,
-    paymentId: resource.payment_id || null,
+    isEnabled,
+    requireEnabled,
+    createOrder,
+    getOrder,
+    verifyOrder,
+    captureOrder,
+    verifyWebhookSignature,
+    parseWebhookEvent,
+    currencyExponent,
+    invoiceIdFor,
   };
 }
 
-module.exports = { createOrder, captureOrder, verifyOrder, verifyWebhookSignature, parseWebhookEvent, parseEnv };
+module.exports = {
+  createPayPalService,
+  currencyExponent,
+  toPayPalAmount,
+  fromPayPalAmount,
+  invoiceIdFor,
+};

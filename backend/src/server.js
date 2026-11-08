@@ -48,6 +48,8 @@ async function start() {
   const membershipCollection = db.collection('memberships');
   const sessionCollection = db.collection('sessions');
   const gmailCollection = db.collection('gmailConnections');
+  const oauthTransactionCollection = db.collection('oauthTransactions');
+  const webhookEventCollection = db.collection('paypalWebhookEvents');
   try { await userCollection.createIndex({ userId: 1 }, { unique: true }); } catch { /* ignore */ }
   try { await userCollection.createIndex({ googleSubject: 1 }, { unique: true }); } catch { /* ignore */ }
   try { await tenantCollection.createIndex({ tenantId: 1 }, { unique: true }); } catch { /* ignore */ }
@@ -58,6 +60,11 @@ async function start() {
   // TTL on sessions via absolute expiry (background cleanup; absolute enforced on read regardless)
   try { await sessionCollection.createIndex({ absoluteExpiresAt: 1 }, { expireAfterSeconds: 0 }); } catch { /* TTL best-effort */ }
   try { await gmailCollection.createIndex({ tenantId: 1 }, { unique: true }); } catch { /* ignore */ }
+  try { await oauthTransactionCollection.createIndex({ transactionId: 1 }, { unique: true }); } catch { /* ignore */ }
+  try { await oauthTransactionCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }); } catch { /* ignore */ }
+  try { await webhookEventCollection.createIndex({ eventId: 1 }, { unique: true }); } catch { /* ignore */ }
+  try { await webhookEventCollection.createIndex({ processedAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 30 }); } catch { /* ignore */ }
+  try { await purchaseCollection.createIndex({ paypalOrderId: 1 }); } catch { /* ignore */ }
 
   // Least-privilege note: deploy with a runtime Mongo user that can read/write only
   // the collections above. Use a separate migration credential for schema changes.
@@ -72,6 +79,8 @@ async function start() {
     membershipCollection,
     sessionCollection,
     gmailCollection,
+    oauthTransactionCollection,
+    webhookEventCollection,
     vendorService: createVendorService({ collection: vendorCollection }),
     purchaseStore: createPurchaseStore({ collection: purchaseCollection }),
     auditService: createAuditService({ collection: auditCollection }),

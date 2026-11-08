@@ -90,6 +90,80 @@ function createPurchaseStore({ collection } = {}) {
       // Legacy getById(purchaseId) — fail closed
       throw new Error('purchaseStore.getById requires { tenantId, purchaseId }.');
     },
+    /**
+     * Webhook lookup: PayPal callbacks contain no tenant context. The order ID is
+     * stored at the top level for an indexed, tenant-free lookup; authorization
+     * still happens against the record's own tenantId before any write.
+     */
+    async findByPayPalOrderId(first) {
+      const orderId = typeof first === 'string' ? first : first?.orderId;
+      if (!orderId) return null;
+      if (collection) {
+        const entry = await collection.findOne({ paypalOrderId: orderId });
+        return entry ? cloneValue(entry) : null;
+      }
+      for (const value of store.values()) {
+        if (value.paypalOrderId === orderId) return cloneValue(value);
+      }
+      return null;
+    },
+    /**
+     * Atomic payment-state transition. The filter requires the current
+     * paymentStatus to be one of expectedStatuses (and, when supplied, the
+     * order ID to match), so concurrent captures/webhooks cannot both win.
+     */
+    async compareAndSetPayment({ tenantId, purchaseId, expectedStatuses = [], expectedOrderId, patch = {}, status } = {}) {
+      const tid = requireTenantId(tenantId);
+      if (!purchaseId) throw new Error('purchaseId is required.');
+      if (!Array.isArray(expectedStatuses) || expectedStatuses.length === 0) throw new Error('expectedStatuses is required.');
+      if (!status) throw new Error('status is required.');
+      const now = new Date().toISOString();
+      const next = { ...cloneValue(patch), paymentStatus: status, updatedAt: now };
+      if (collection) {
+        const filter = { tenantId: tid, purchaseId, paymentStatus: { $in: expectedStatuses } };
+        if (expectedOrderId !== undefined) filter.paypalOrderId = expectedOrderId;
+        const result = await collection.updateOne(filter, { $set: next });
+        const record = await collection.findOne({ tenantId: tid, purchaseId });
+        return { updated: Boolean(result && result.matchedCount > 0), record: record ? cloneValue(record) : null };
+      }
+      const current = store.get(keyFor(tid, purchaseId));
+      if (!current) return { updated: false, record: null };
+      if (!expectedStatuses.includes(current.paymentStatus)) return { updated: false, record: cloneValue(current) };
+      if (expectedOrderId !== undefined && current.paypalOrderId !== expectedOrderId) return { updated: false, record: cloneValue(current) };
+      const merged = { ...current, ...cloneValue(next), tenantId: tid, purchaseId };
+      store.set(keyFor(tid, purchaseId), cloneValue(merged));
+      return { updated: true, record: cloneValue(merged) };
+    },
+    /**
+     * Atomic approval decision. Expected status defaults to PENDING so a second
+     * reviewer cannot overwrite a completed decision; payment must not be
+     * COMPLETED (checked by the caller before calling).
+     */
+    async compareAndSetApproval({ tenantId, purchaseId, expectedStatuses = ['PENDING'], status, patch = {}, expectedPaymentStatuses = null } = {}) {
+      const tid = requireTenantId(tenantId);
+      if (!purchaseId) throw new Error('purchaseId is required.');
+      if (!status) throw new Error('status is required.');
+      const now = new Date().toISOString();
+      const next = { ...cloneValue(patch), approvalStatus: status, updatedAt: now };
+      if (collection) {
+        const filter = { tenantId: tid, purchaseId, approvalStatus: { $in: expectedStatuses } };
+        if (Array.isArray(expectedPaymentStatuses) && expectedPaymentStatuses.length > 0) {
+          filter.paymentStatus = { $in: expectedPaymentStatuses };
+        }
+        const result = await collection.updateOne(filter, { $set: next });
+        const record = await collection.findOne({ tenantId: tid, purchaseId });
+        return { updated: Boolean(result && result.matchedCount > 0), record: record ? cloneValue(record) : null };
+      }
+      const current = store.get(keyFor(tid, purchaseId));
+      if (!current) return { updated: false, record: null };
+      if (!expectedStatuses.includes(current.approvalStatus)) return { updated: false, record: cloneValue(current) };
+      if (Array.isArray(expectedPaymentStatuses) && !expectedPaymentStatuses.includes(current.paymentStatus)) {
+        return { updated: false, record: cloneValue(current) };
+      }
+      const merged = { ...current, ...cloneValue(next), tenantId: tid, purchaseId };
+      store.set(keyFor(tid, purchaseId), cloneValue(merged));
+      return { updated: true, record: cloneValue(merged) };
+    },
     async list(first) {
       const normalized = (first && typeof first === 'object' && ('tenantId' in first || 'filters' in first)) ? first : null;
       if (!normalized) {

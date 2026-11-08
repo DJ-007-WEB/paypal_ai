@@ -195,8 +195,12 @@ function createPurchaseRoutes({ vendorService, auditService, purchaseStore, aiSe
         uncertainties: decision.uncertainties || [],
         authorization: {
           paymentAuthorized: false,
+          paymentCaptured: false,
           requiresHumanApproval: decision.status === 'RECOMMENDED' && policyResult.passed,
         },
+        approvalStatus: 'PENDING',
+        paymentStatus: 'NONE',
+        payment: { paypal: { status: 'NONE' } },
         auditEvents: [],
       });
 

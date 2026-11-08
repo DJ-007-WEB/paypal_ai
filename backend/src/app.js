@@ -15,6 +15,7 @@ const { createMandateRoutes } = require('./routes/mandate.routes');
 const { createAuthRoutes } = require('./routes/auth.routes');
 const { createWorkspaceRoutes } = require('./routes/workspace.routes');
 const { createGmailRoutes } = require('./routes/gmail.routes');
+const { createPaymentWebhookHandler } = require('./routes/payment.routes');
 const { createVendorService } = require('./services/vendor.service');
 const { createAuditService } = require('./services/audit.service');
 const { createPurchaseStore } = require('./services/purchaseStore.service');
@@ -24,6 +25,9 @@ const { createTenantService } = require('./services/tenant.service');
 const { createCryptoService } = require('./services/crypto.service');
 const { createGmailService } = require('./services/gmail.service');
 const { createAiService } = require('./services/ai.service');
+const { createOAuthTransactionStore } = require('./services/oauthTransaction.service');
+const { createWebhookEventStore } = require('./services/webhookEvent.service');
+const { createPayPalService } = require('./services/paypal.service');
 
 function createApp(options = {}) {
   const config = options.config || loadConfig(process.env);
@@ -40,6 +44,13 @@ function createApp(options = {}) {
   const cryptoService = options.cryptoService || createCryptoService({ config });
   const gmailService = options.gmailService || createGmailService({ collection: options.gmailCollection || null, cryptoService, config });
   const aiService = options.aiService || createAiService({ config });
+  const oauthTransactionStore = options.oauthTransactionStore || createOAuthTransactionStore({
+    collection: options.oauthTransactionCollection || null,
+  });
+  const webhookEventStore = options.webhookEventStore || createWebhookEventStore({
+    collection: options.webhookEventCollection || null,
+  });
+  const paypalService = options.paypalService || createPayPalService({ config });
 
   const allowTestPrincipal = options.allowTestPrincipal === true;
   const oidcExchange = options.oidcExchange || null;
@@ -113,6 +124,18 @@ function createApp(options = {}) {
   });
   app.use('/api/', generalLimiter);
 
+  // --- PayPal webhook: MUST be mounted before express.json ---
+  // PayPal signs the exact raw bytes; the endpoint has no session, CSRF, or
+  // tenant context. Signature + server-side correlation provide authentication.
+  const paymentWebhookHandler = createPaymentWebhookHandler({
+    purchaseStore, auditService, paypalService, webhookEventStore,
+  });
+  app.post(
+    '/api/payments/webhook',
+    express.raw({ type: 'application/json', limit: config.MAX_JSON_BODY_BYTES }),
+    paymentWebhookHandler
+  );
+
   // --- Body limits + timeouts ---
   app.use(express.json({ limit: config.MAX_JSON_BODY_BYTES }));
   app.use((req, res, next) => {
@@ -170,7 +193,7 @@ function createApp(options = {}) {
   });
 
   // --- Auth flow (special: no tenant until membership resolved) ---
-  const authRouter = createAuthRoutes({ config, userService, sessionStore, auditService, oidcExchange });
+  const authRouter = createAuthRoutes({ config, userService, sessionStore, auditService, tenantService, oidcExchange, oauthTransactionStore });
   // Auth start/callback rate-limited strictly
   app.use('/api', authLimiter, authRouter);
   // Session/logout JSON endpoints also under /api but with general limiter already; mount separately for clarity
@@ -184,12 +207,17 @@ function createApp(options = {}) {
   }
   app.use('/api', requireAuthentication, workspaceTenantGate, csrfProtection, workspaceRouter);
 
-// --- Approval routes (auth + tenant) ---
+  // --- Approval routes (auth + tenant + per-route permission) ---
   const approvalRouter = createApprovalRoutes({ tenantService, purchaseStore, auditService });
-  app.use('/api', requireAuthentication, resolveWorkspaceMembership, csrfProtection, approvalRouter);
+  function approvalPermissionGate(req, res, next) {
+    if (req.method === 'GET' && req.path === '/approvals/pending') return requirePermission('purchases:read')(req, res, next);
+    if (req.method === 'POST' && /^\/approvals\/purchase\/[^/]+\/(approve|reject)$/.test(req.path)) return requirePermission('purchases:approve')(req, res, next);
+    return next();
+  }
+  app.use('/api', requireAuthentication, resolveWorkspaceMembership, approvalPermissionGate, csrfProtection, approvalRouter);
 
   // --- Gmail integration: callback is public (transaction-bound), others require auth+tenant ---
-  const gmailRouter = createGmailRoutes({ config, gmailService, tenantService, auditService });
+  const gmailRouter = createGmailRoutes({ config, gmailService, tenantService, userService, auditService, oauthTransactionStore });
   async function gmailAuthGate(req, res, next) {
     const isCallback = req.path === '/integrations/google-gmail/callback' && req.method === 'GET';
     if (isCallback) return next();
@@ -227,9 +255,14 @@ function createApp(options = {}) {
   }
   app.use('/api', requireAuthentication, resolveWorkspaceMembership, purchasePermissionGate, csrfProtection, purchaseRouter);
 
-  // --- Payment routes (auth + tenant) ---
-  const paymentRouter = createPaymentRoutes({ purchaseStore, auditService });
-  app.use('/api', requireAuthentication, resolveWorkspaceMembership, csrfProtection, paymentRouter);
+  // --- Payment routes (auth + tenant + per-route permission) ---
+  const paymentRouter = createPaymentRoutes({ purchaseStore, auditService, paypalService });
+  function paymentPermissionGate(req, res, next) {
+    if (req.method === 'POST' && /^\/payments\/(create|capture|cancel)\/[^/]+$/.test(req.path)) return requirePermission('purchases:approve')(req, res, next);
+    if (req.method === 'GET' && /^\/payments\/status\/[^/]+$/.test(req.path)) return requirePermission('purchases:read')(req, res, next);
+    return next();
+  }
+  app.use('/api', requireAuthentication, resolveWorkspaceMembership, paymentPermissionGate, csrfProtection, paymentRouter);
 
   // --- Audit read (auth + tenant + permission) ---
   app.get('/api/audit/events', requireAuthentication, resolveWorkspaceMembership, requirePermission('audit:read'), async (req, res, next) => {
@@ -286,7 +319,7 @@ function createApp(options = {}) {
   }
 
   // Test harness exposure (never in production responses)
-  app.__services = { config, vendorService, auditService, purchaseStore, sessionStore, userService, tenantService, cryptoService, gmailService, aiService };
+  app.__services = { config, vendorService, auditService, purchaseStore, sessionStore, userService, tenantService, cryptoService, gmailService, aiService, oauthTransactionStore, webhookEventStore, paypalService };
   app.__allowTestPrincipal = allowTestPrincipal;
 
   return app;
