@@ -3,6 +3,7 @@ import { evaluatePurchase, explainPurchase, getAiStatus, getBusinessEmailStatus,
 import { Button, EmptyState, InlineAlert, LoadingState, Logo, PageHeader, StatusBadge, ThemeControl, formatMoney, go } from './components/ui.jsx';
 import { SUPPORTED_CURRENCIES, majorToMinor, minorToMajor } from './currency.js';
 import VendorImportWizard from './components/VendorImportWizard.jsx';
+import ApprovalsPage from './pages/Approvals.jsx';
 
 const STORE = 'mandate.demo.workspace.v1';
 const THEME_KEY = 'mandate.theme';
@@ -47,7 +48,7 @@ function LandingPage() {
               <Button onClick={() => go('/signup')}>Create your workspace <span aria-hidden="true">→</span></Button>
               <a className="secondary-link" href="#workflow">Explore how it works <span aria-hidden="true">↓</span></a>
             </div>
-            <div className="hero-assurance"><span aria-hidden="true">✓</span> AI recommends · Policy validates · Humans decide · Payments locked</div>
+            <div className="hero-assurance"><span aria-hidden="true">✓</span> AI recommends · Policy validates · Humans decide · Payments approval-gated</div>
           </div>
           <div className="hero-visual" role="img" aria-label="Illustrative preview of a purchase review with supplier comparison">
             <div className="preview-top">
@@ -90,7 +91,7 @@ function LandingPage() {
             <div className="steps-grid steps-grid-3">
               {[['01', 'Define the request', 'Specify the product, quantity, budget, delivery requirements, and constraints. You own this step.'],
                 ['02', 'Compare and validate', 'The engine ranks eligible offers and deterministic policy checks validate the result independently.'],
-                ['03', 'Review the recommendation', 'An authorized person sees the comparison, the policy outcome, and what remains for human decision. Payment stays locked.']].map((s) => (
+                ['03', 'Review the recommendation', 'An authorized person sees the comparison, the policy outcome, and what remains for human decision. Payment stays gated until approval.']].map((s) => (
                 <article key={s[0]}><span>{s[0]}</span><h3>{s[1]}</h3><p>{s[2]}</p></article>
               ))}
             </div>
@@ -291,7 +292,7 @@ function Onboarding({ user, onComplete }) {
                 <label>Approval contact work email <small className="field-hint">Optional — no email will be sent</small><input type="email" value={business.managerEmail} onChange={(e) => set('managerEmail', e.target.value)} placeholder="manager@company.com" /></label>
                 <label className="setting-toggle"><span><b>All purchases should be reviewed</b><small>Record your preference for human review before purchasing.</small></span><input type="checkbox" checked={business.allReview} onChange={(e) => set('allReview', e.target.checked)} /></label>
                 <label className="setting-toggle"><span><b>Budget-based approval thresholds</b><small>You intend to define thresholds in a future approval workflow.</small></span><input type="checkbox" checked={business.thresholds} onChange={(e) => set('thresholds', e.target.checked)} /></label>
-                <div className="notice-box">Approval preferences are recorded locally only. Approval endpoints return 501 and no approval emails are sent. A preference is not a permission.</div>
+                <div className="notice-box">Approval preferences are recorded locally only. Actual approvals require the server permission <code>purchases:approve</code> and are recorded in the workspace audit trail. A preference is not a permission.</div>
               </div>
             ) : null}
             <div style={{ display: step === 3 ? 'block' : 'none' }}>
@@ -566,13 +567,13 @@ function PurchaseDesk({ defaults }) {
       <PageHeader
         eyebrow="Controlled procurement"
         title="Purchase desk"
-        description="Turn a buying request into a policy-checked recommendation. AI recommends, policy validates, and your team decides — payment stays locked."
+        description="Turn a buying request into a policy-checked recommendation. AI recommends, policy validates, and your team decides — payment stays gated until an authorized approver signs off."
         actions={<span className={online ? 'api-status online' : online === false ? 'api-status' : 'api-status'}><i aria-hidden="true" />{online ? 'API connected' : online === false ? 'API disconnected' : 'Checking API…'}</span>}
       />
       <div className="metric-row">
         <article><span>Decision engine</span><b>Operational</b><small>Deterministic evaluation</small></article>
         <article><span>Policy guardrails</span><b className="green-text">Checked independently</b><small>Request-specific constraints</small></article>
-        <article><span>Payment execution</span><b className="amber-text">Locked</b><small>No approval or payment workflow</small></article>
+        <article><span>Payment execution</span><b className="amber-text">Approval-gated</b><small>PayPal Sandbox executes only after approval</small></article>
       </div>
       <div className="purchase-columns">
         <section className="surface" aria-label="Purchase request">
@@ -682,8 +683,8 @@ function PurchaseDesk({ defaults }) {
 
               <div className="status-list">
                 <div><span><b>Policy validation — deterministic</b><small>{policyPassed ? 'Configured guardrails passed for the recommended offer' : 'One or more checks did not pass; see findings'}</small></span><strong className={policyPassed ? 'pill-good' : 'pill-bad'}>{policyPassed ? 'PASSED' : 'BLOCKED'}</strong></div>
-                <div><span><b>Human decision — required</b><small>{result.authorization?.requiresHumanApproval ? 'An authorized person must review before anything else happens' : 'No approval action available in this prototype'}</small></span><strong className="pill-wait">REVIEW REQUIRED</strong></div>
-                <div><span><b>Payment execution — locked</b><small>Not enabled in this prototype; never a “Pay now” action</small></span><strong className="pill-wait">LOCKED</strong></div>
+                <div><span><b>Human decision — required</b><small>{result.authorization?.requiresHumanApproval ? 'An authorized approver must review this purchase before payment' : 'No human approval is required by the stored authorization result'}</small></span><strong className="pill-wait">{result.authorization?.requiresHumanApproval ? 'REVIEW REQUIRED' : 'NOT REQUIRED'}</strong></div>
+                <div><span><b>Payment execution — approval-gated</b><small>A verified PayPal Sandbox capture is required; nothing is charged during evaluation</small></span><strong className="pill-wait">GATED</strong></div>
               </div>
 
               {result.policy?.violations?.length ? (
@@ -907,7 +908,9 @@ function PurchaseRecordDetail({ record, vendorNames }) {
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <StatusBadge tone={decisionTone(record.decision?.status)}>{record.decision?.status || 'Unknown'}</StatusBadge>
         <StatusBadge tone={record.policy?.passed ? 'ok' : 'error'}>{record.policy?.passed ? 'Policy passed' : 'Policy blocked'}</StatusBadge>
-        <StatusBadge tone="warn">Payment locked</StatusBadge>
+        <StatusBadge tone={record.paymentStatus === 'COMPLETED' ? 'ok' : record.approvalStatus === 'APPROVED' ? 'warn' : 'neutral'}>
+          {record.paymentStatus === 'COMPLETED' ? 'Payment completed' : record.approvalStatus === 'APPROVED' ? 'Approved — payment pending' : 'Approval required'}
+        </StatusBadge>
       </div>
       <ul className="confirm-list">
         <li><span>Purchase ID</span><b><code>{record.purchaseId}</code></b></li>
@@ -1071,7 +1074,7 @@ function PoliciesPage({ profile }) {
     ['Delivery deadline', `${profile?.deadline || 5} days`, 'Request default', 'Sent with each evaluation.'],
     ['Minimum quality', `${profile?.quality || 70}/100`, 'Request default', 'Sent with each evaluation.'],
     ['Minimum reliability', `${profile?.reliability || 70}/100`, 'Request default', 'Sent with each evaluation.'],
-    ['Human review preference', profile?.allReview ? 'Preferred' : 'Not required', 'Not enforced by backend', 'A recorded intention. Approval endpoints return 501.'],
+    ['Human review preference', profile?.allReview ? 'Preferred' : 'Not required', 'Local preference', 'A recorded intention. Approvals are enforced by the server permission model.'],
   ];
   return (
     <div className="page-stack">
@@ -1350,7 +1353,7 @@ function SettingsPage({ profile, theme, onThemeChange }) {
 
       <section className="surface">
         <span className="step-kicker">Review preferences · local preference, not permission</span>
-        <p className="muted-note">Human review: {profile?.allReview ? 'preferred' : 'not required'} · Thresholds workflow: {profile?.thresholds ? 'intended' : 'not configured'}. Approval endpoints are not implemented, so these settings do not grant approval authority.</p>
+        <p className="muted-note">Human review: {profile?.allReview ? 'preferred' : 'not required'} · Thresholds workflow: {profile?.thresholds ? 'intended' : 'not configured'}. These local settings do not grant approval authority; the server checks the <code>purchases:approve</code> permission.</p>
       </section>
 
       <section className="surface">
@@ -1367,10 +1370,6 @@ function SettingsPage({ profile, theme, onThemeChange }) {
       </section>
     </div>
   );
-}
-
-function ApprovalsPage({ profile, onNavigate }) {
-  return <Approvals defaultProfile={profile} onNavigate={onNavigate} />;
 }
 
 /* ================= Shell ================= */
@@ -1426,7 +1425,7 @@ function AppShell({ page, profile, user, onSignOut, theme, onThemeChange, childr
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="prototype-status"><span aria-hidden="true" />Prototype mode<small>Payments disabled · {apiOnline ? 'API connected' : 'API status unknown'}</small></div>
+          <div className="prototype-status"><span aria-hidden="true" />Sandbox mode<small>Approval-gated payments · {apiOnline ? 'API connected' : 'API status unknown'}</small></div>
           <div className="sidebar-user"><span className="user-avatar">{(user?.fullName || 'D').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()}</span><span><b>{user?.fullName || 'Signed out'}</b><small>{user?.email || 'No server session'}</small></span><button aria-label="Sign out" title="Sign out" onClick={onSignOut}>↪</button></div>
         </div>
       </aside>
@@ -1442,7 +1441,7 @@ function AppShell({ page, profile, user, onSignOut, theme, onThemeChange, childr
           </div>
         </header>
         <main className="app-content">{children}</main>
-        <footer className="app-footer"><span>Mandate · Procurement workspace</span><span>Prototype — recommendation is not approval; payment execution locked</span></footer>
+        <footer className="app-footer"><span>Mandate · Procurement workspace</span><span>Sandbox — recommendation is not approval; payments are approval-gated</span></footer>
       </div>
     </div>
   );
@@ -1604,7 +1603,7 @@ export default function App() {
               : page === 'history' ? <HistoryPage />
                 : page === 'policies' ? <PoliciesPage profile={profile} />
                   : page === 'audit' ? <AuditPage />
-                    : page === 'approvals' ? <ApprovalsPage />
+                    : page === 'approvals' ? <ApprovalsPage permissions={permissions} />
                       : <SettingsPage profile={profile} theme={theme} onThemeChange={setTheme} />}
       </AppShell>
     </>

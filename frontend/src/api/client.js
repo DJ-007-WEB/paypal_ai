@@ -1,7 +1,8 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api').replace(/\/$/, '');
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
 
 const TENANT_KEY = 'mandate.selected.tenant.v1';
 let cachedCsrfToken = null;
+let csrfRequest = null;
 
 function getSelectedTenantId() {
   try { return localStorage.getItem(TENANT_KEY) || ''; } catch { return ''; }
@@ -51,58 +52,98 @@ function requestError(body, fallback, status) {
   return new Error([base, details].filter(Boolean).join(' '));
 }
 
-async function apiFetch(path, { method = 'GET', body, headers = {} } = {}) {
+async function refreshCsrfToken() {
+  if (csrfRequest) return csrfRequest;
+  csrfRequest = (async () => {
+    const response = await fetch(`${API_BASE_URL}/auth/csrf`, { credentials: 'include' });
+    const body = await parseBody(response);
+    if (!response.ok || !body?.data?.csrfToken) {
+      throw requestError(body, 'Could not obtain a CSRF token', response.status);
+    }
+    cachedCsrfToken = body.data.csrfToken;
+    return cachedCsrfToken;
+  })();
+  try {
+    return await csrfRequest;
+  } finally {
+    csrfRequest = null;
+  }
+}
+
+async function rawRequest(path, { method = 'GET', body, headers = {} } = {}) {
+  const methodUpper = String(method).toUpperCase();
+  const hasBody = body !== undefined && body !== null;
+  const payload = hasBody
+    ? (typeof body === 'string' ? body : JSON.stringify(body))
+    : undefined;
+  const requestHeaders = authHeaders({
+    ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+    ...headers,
+  });
+
   let response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
-      method,
+      method: methodUpper,
       credentials: 'include',
-      headers: authHeaders({ ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }),
-      body: body ? JSON.stringify(body) : undefined,
+      headers: requestHeaders,
+      body: payload,
     });
   } catch {
     throw new Error(`Could not reach the Mandate API at ${API_BASE_URL}. Check that the backend is running.`);
   }
   const parsed = await parseBody(response);
+  return { response, parsed };
+}
+
+async function apiFetch(path, { method = 'GET', body, headers = {} } = {}) {
+  const methodUpper = String(method).toUpperCase();
+  const stateChanging = !['GET', 'HEAD', 'OPTIONS'].includes(methodUpper);
+  if (stateChanging && !cachedCsrfToken) {
+    try { await refreshCsrfToken(); } catch { /* the request will fail closed if CSRF is required */ }
+  }
+
+  let { response, parsed } = await rawRequest(path, { method, body, headers });
+
+  // A session can rotate the CSRF token; refresh once and retry a rejected write.
+  if (stateChanging && response.status === 403 && parsed?.error?.code === 'CSRF_INVALID') {
+    try {
+      await refreshCsrfToken();
+      ({ response, parsed } = await rawRequest(path, { method, body, headers }));
+    } catch { /* fall through to original error */ }
+  }
+
   if (!response.ok || parsed.success === false) throw requestError(parsed, 'Request failed', response.status);
   return parsed.data;
 }
 
-/* ---------- session / auth (API-validated, replaces local-storage authority) ---------- */
+/* ---------- session / auth ---------- */
 
 export function loginWithGoogle() {
   window.location.href = `${API_BASE_URL}/auth/google`;
 }
 
 export async function getSession() {
-  let response;
-  try {
-    response = await fetch(`${API_BASE_URL}/auth/session`, { credentials: 'include' });
-  } catch {
-    throw new Error(`Could not reach the Mandate API at ${API_BASE_URL}. Check that the backend is running.`);
-  }
-  const body = await parseBody(response);
-  if (!response.ok) throw requestError(body, 'Session check failed', response.status);
-  if (body?.data?.authenticated && body.data.csrfToken) cachedCsrfToken = body.data.csrfToken;
-  return body.data;
+  const { response, parsed } = await rawRequest('/auth/session');
+  if (!response.ok) throw requestError(parsed, 'Session check failed', response.status);
+  if (parsed?.data?.authenticated && parsed.data.csrfToken) cachedCsrfToken = parsed.data.csrfToken;
+  return parsed.data;
 }
 
 export async function getCsrfToken() {
-  const data = await apiFetch('/auth/csrf');
-  cachedCsrfToken = data.csrfToken;
-  return data.csrfToken;
+  return refreshCsrfToken();
 }
 
 export async function logout() {
   if (!cachedCsrfToken) {
-    try { await getCsrfToken(); } catch { /* session may already be invalid */ }
+    try { await refreshCsrfToken(); } catch { /* session may already be invalid */ }
   }
   const data = await apiFetch('/auth/logout', { method: 'POST', body: {} });
   cachedCsrfToken = null;
   return data;
 }
 
-/* ---------- workspaces / verification status (read-only display) ---------- */
+/* ---------- workspaces / verification status ---------- */
 
 export async function getMyWorkspaces() {
   return apiFetch('/workspaces/me');
@@ -118,11 +159,34 @@ export async function getBusinessEmailStatus(tenantId) {
   return apiFetch(`/workspaces/${id}/business-email`);
 }
 
+export async function verifyBusinessEmail(tenantId, businessEmail) {
+  const id = encodeURIComponent(String(tenantId || getSelectedTenantId() || '').trim());
+  if (!id) throw new Error('Select a workspace first.');
+  return apiFetch(`/workspaces/${id}/business-email/verify`, { method: 'POST', body: { businessEmail } });
+}
+
 export async function listWorkspaceMembers(tenantId) {
   const id = encodeURIComponent(String(tenantId || getSelectedTenantId() || '').trim());
   if (!id) throw new Error('Select a workspace first.');
   const data = await apiFetch(`/workspaces/${id}/members`);
   return Array.isArray(data?.members) ? data.members : [];
+}
+
+export async function inviteWorkspaceMember(tenantId, { email, userId, role }) {
+  const id = encodeURIComponent(String(tenantId || getSelectedTenantId() || '').trim());
+  if (!id) throw new Error('Select a workspace first.');
+  return apiFetch(`/workspaces/${id}/members`, { method: 'POST', body: { email, userId, role } });
+}
+
+export async function getInvitations() {
+  const data = await apiFetch('/workspaces/invitations');
+  return Array.isArray(data?.invitations) ? data.invitations : [];
+}
+
+export async function acceptInvitation(tenantId) {
+  const id = encodeURIComponent(String(tenantId || '').trim());
+  if (!id) throw new Error('An invitation is required.');
+  return apiFetch(`/workspaces/${id}/members/accept`, { method: 'POST', body: {} });
 }
 
 export async function updateWorkspace(tenantId, patch) {
@@ -139,16 +203,14 @@ export function gmailConnectUrl() {
   return `${API_BASE_URL}/integrations/google-gmail/connect`;
 }
 
-/* ---------- existing business APIs (now authenticated + tenant-scoped) ---------- */
+export async function disconnectGmail() {
+  return apiFetch('/integrations/google-gmail/disconnect', { method: 'POST', body: {} });
+}
+
+/* ---------- purchases / approvals / audit ---------- */
 
 export async function evaluatePurchase(payload) {
-  try {
-    return await apiFetch('/purchases/evaluate', { method: 'POST', body: payload });
-  } catch (err) {
-    // Preserve the friendlier unreachable message for network failures
-    if (String(err.message || '').includes('Could not reach')) throw err;
-    throw err;
-  }
+  return apiFetch('/purchases/evaluate', { method: 'POST', body: payload });
 }
 
 export async function getPurchaseById(purchaseId) {
@@ -168,6 +230,17 @@ export async function getPurchaseById(purchaseId) {
 export async function listPurchases(status) {
   const q = status ? `?status=${encodeURIComponent(status)}` : '';
   return apiFetch(`/purchases${q}`);
+}
+
+export async function listPendingApprovals() {
+  return apiFetch('/approvals/pending');
+}
+
+export async function decidePurchase(purchaseId, action, rationale = '') {
+  const id = encodeURIComponent(String(purchaseId || '').trim());
+  if (!id) throw new Error('A purchase ID is required.');
+  if (action !== 'approve' && action !== 'reject') throw new Error('Invalid approval action.');
+  return apiFetch(`/approvals/purchase/${id}/${action}`, { method: 'POST', body: { rationale } });
 }
 
 export async function getAiStatus() {
@@ -209,51 +282,43 @@ export async function getVendors() {
   }
 }
 
-/* ---------- PayPal checkout flow ---------- */
+export async function importVendors(offers, { importId } = {}) {
+  return apiFetch('/vendors/import', {
+    method: 'POST',
+    body: { offers, ...(importId ? { importId } : {}) },
+    headers: importId ? { 'Idempotency-Key': importId } : {},
+  });
+}
+
+/* ---------- PayPal Sandbox checkout ---------- */
 
 export async function createPaypalOrder(purchaseId) {
-  try {
-    const data = await apiFetch(`/api/payments/create/${purchaseId}`, { method: 'POST' });
-    return data;
-  } catch (err) {
-    throw err;
+  const id = encodeURIComponent(String(purchaseId || '').trim());
+  if (!id) throw new Error('A purchase ID is required.');
+  const data = await apiFetch(`/payments/create/${id}`, { method: 'POST', body: {} });
+  if (!data?.approvalUrl) {
+    throw new Error('PayPal did not return an approval URL. No payment was started.');
   }
+  return data;
 }
 
 export async function capturePaypalOrder(purchaseId, orderId) {
-  try {
-    const data = await apiFetch(`/api/payments/capture/${purchaseId}`, {
-      method: 'POST',
-      body: JSON.stringify({ orderId }),
-    });
-    return data;
-  } catch (err) {
-    throw err;
-  }
+  const id = encodeURIComponent(String(purchaseId || '').trim());
+  if (!id) throw new Error('A purchase ID is required.');
+  if (!orderId) throw new Error('The PayPal order ID is required to capture payment.');
+  return apiFetch(`/payments/capture/${id}`, { method: 'POST', body: { orderId } });
+}
+
+export async function cancelPaypalOrder(purchaseId) {
+  const id = encodeURIComponent(String(purchaseId || '').trim());
+  if (!id) throw new Error('A purchase ID is required.');
+  return apiFetch(`/payments/cancel/${id}`, { method: 'POST', body: {} });
 }
 
 export async function getPaypalStatus(purchaseId) {
-  try {
-    const data = await apiFetch(`/api/payments/status/${purchaseId}`);
-    return data;
-  } catch (err) {
-    throw err;
-  }
-}
-
-export async function importVendors(offers, { importId } = {}) {
-  try {
-    return await apiFetch('/vendors/import', {
-      method: 'POST',
-      body: { offers, ...(importId ? { importId } : {}) },
-      headers: importId ? { 'Idempotency-Key': importId } : {},
-    });
-  } catch (err) {
-    if (String(err.message || '').includes('Could not reach')) {
-      throw new Error(`Could not reach the Mandate API at ${API_BASE_URL}. Check that the backend is running.`);
-    }
-    throw err;
-  }
+  const id = encodeURIComponent(String(purchaseId || '').trim());
+  if (!id) throw new Error('A purchase ID is required.');
+  return apiFetch(`/payments/status/${id}`);
 }
 
 export { API_BASE_URL };
