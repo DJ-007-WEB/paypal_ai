@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { invoiceIdFor } = require('../services/paypal.service');
+const { invoiceIdFor, isSupportedPayPalCurrency } = require('../services/paypal.service');
 
 /**
  * PayPal Sandbox payment routes.
@@ -90,6 +90,13 @@ function createPaymentRoutes({ purchaseStore, auditService, paypalService } = {}
         throw httpError('AMOUNT_EXCEEDS_BUDGET', 'The recommendation exceeds the approved budget.', 400);
       }
       if (!/^[A-Z]{3}$/.test(currency)) throw httpError('INVALID_CURRENCY', 'The stored recommendation has no valid currency.', 400);
+      if (!isSupportedPayPalCurrency(currency)) {
+        throw httpError(
+          'PAYPAL_CURRENCY_NOT_SUPPORTED',
+          `PayPal Checkout does not support ${currency}. No currency conversion is performed. Use a PayPal-supported currency for Sandbox checkout.`,
+          400,
+        );
+      }
 
       // Return the existing approval link instead of creating a second order.
       const existing = purchase.payment?.paypal || {};
