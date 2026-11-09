@@ -617,6 +617,7 @@ test('Google login succeeds with the transaction cookie and preserves state, non
     GOOGLE_OIDC_CLIENT_ID: 'client-id',
     GOOGLE_OIDC_CLIENT_SECRET: 'client-secret',
     GOOGLE_OIDC_REDIRECT_URI: 'http://localhost:5173/api/auth/google/callback',
+    SESSION_COOKIE_SECURE: 'true',
   });
   const exchangeCalls = [];
   const oidcExchange = async (args) => {
@@ -649,9 +650,13 @@ test('Google login succeeds with the transaction cookie and preserves state, non
     const startCookies = start.headers.getSetCookie();
     const txCookie = startCookies.find((cookie) => cookie.startsWith('mandate.oauth_tx='));
     assert.ok(txCookie, 'transaction cookie must be issued');
-    assert.match(txCookie, /Path=\/api\/auth\/google/);
-    assert.match(txCookie, /HttpOnly/);
-    assert.match(txCookie, /SameSite=Lax/);
+    const cookiePath = (txCookie.match(/Path=([^;]+)/) || [])[1];
+    assert.equal(cookiePath, '/api/auth/google');
+    assert.ok('/api/auth/google/callback'.startsWith(cookiePath), 'cookie path must cover the callback');
+    assert.match(txCookie, /; Secure(?:;|$)/);
+    assert.match(txCookie, /; HttpOnly(?:;|$)/);
+    assert.match(txCookie, /; SameSite=Lax(?:;|$)/);
+    assert.ok(!/;\s*Domain=/i.test(txCookie), 'transaction cookie must be host-only');
     const txCookiePair = txCookie.split(';')[0];
 
     const callback = await fetch(

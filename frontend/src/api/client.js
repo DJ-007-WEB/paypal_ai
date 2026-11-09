@@ -120,7 +120,10 @@ async function apiFetch(path, { method = 'GET', body, headers = {} } = {}) {
 /* ---------- session / auth ---------- */
 
 export function loginWithGoogle() {
-  window.location.href = `${API_BASE_URL}/auth/google`;
+  // Always start OAuth on the browser-facing origin. The mandate.oauth_tx
+  // cookie is host-only, so starting at the Render API host would make the
+  // Vercel callback unable to read it.
+  window.location.href = '/api/auth/google';
 }
 
 export async function getSession() {

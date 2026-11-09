@@ -78,7 +78,7 @@ Open `http://localhost:5173`. The frontend always calls the relative base `/api`
 VITE_DEV_API_PROXY=http://localhost:3000
 ```
 
-For a non-proxied API base, set `VITE_API_BASE_URL` at build time. Never place PayPal, Google, MongoDB, session, or encryption secrets in `VITE_*` variables — Vite embeds those in the browser bundle.
+For a non-proxied API base, set `VITE_API_BASE_URL` at build time. Google OAuth requires the same-origin `/api` proxy so the host-only `mandate.oauth_tx` cookie round-trips. Never place PayPal, Google, MongoDB, session, or encryption secrets in `VITE_*` variables — Vite embeds those in the browser bundle.
 
 ## Deployment
 
@@ -152,6 +152,7 @@ TOKEN_ENCRYPTION_KEY=<base64 32-byte key or 64-char hex>
 - Build command: `npm run build`
 - Output directory: `dist`
 - `frontend/vercel.json` rewrites `/api/:path*` to `https://paypal-ai-m3dq.onrender.com/api/:path*` and serves the SPA fallback for all other paths.
+- Remove `VITE_API_BASE_URL` from the Vercel build environment (or set it to `/api`). An absolute Render URL makes Google sign-in start on `onrender.com`, so the host-only `mandate.oauth_tx` cookie is not sent to the Vercel callback.
 - Do not add backend secrets to Vercel. `VITE_*` values are public. `VITE_API_BASE_URL` is unnecessary when the rewrite/proxy is used.
 
 ### Google Cloud OAuth
