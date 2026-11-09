@@ -23,6 +23,17 @@ const TOKEN_SAFETY_WINDOW_MS = 60 * 1000;
 const ZERO_DECIMAL = new Set(['HUF', 'JPY', 'TWD', 'KRW']);
 const THREE_DECIMAL = new Set(['BHD', 'JOD', 'KWD', 'OMR', 'TND']);
 
+// PayPal REST Checkout API currencies (country/account restrictions may still apply).
+const PAYPAL_SUPPORTED_CURRENCIES = new Set([
+  'AUD', 'BRL', 'CAD', 'CNY', 'CZK', 'DKK', 'EUR', 'GBP', 'HKD', 'HUF',
+  'ILS', 'JPY', 'MXN', 'MYR', 'NOK', 'NZD', 'PHP', 'PLN', 'RUB', 'SEK',
+  'SGD', 'THB', 'TWD', 'USD', 'CHF',
+]);
+
+function isSupportedPayPalCurrency(currency) {
+  return PAYPAL_SUPPORTED_CURRENCIES.has(String(currency || '').trim().toUpperCase());
+}
+
 function currencyExponent(currency) {
   const code = String(currency || '').toUpperCase();
   if (ZERO_DECIMAL.has(code)) return 0;
@@ -145,6 +156,9 @@ function createPayPalService({ config } = {}) {
   async function createOrder({ amountMinor, currency, purchaseId, tenantId, requestId } = {}) {
     requireEnabled();
     if (!purchaseId || !tenantId) throw paypalError('INVALID_ORDER', 'purchaseId and tenantId are required.', 400);
+    if (!isSupportedPayPalCurrency(currency)) {
+      throw paypalError('PAYPAL_CURRENCY_NOT_SUPPORTED', `PayPal Checkout does not support ${String(currency || '').toUpperCase() || 'this currency'}. No currency conversion is performed. Use a PayPal-supported currency for Sandbox checkout.`, 400);
+    }
     const amount = toPayPalAmount(amountMinor, currency);
     const order = {
       intent: 'CAPTURE',
@@ -365,6 +379,7 @@ function createPayPalService({ config } = {}) {
     verifyWebhookSignature,
     parseWebhookEvent,
     currencyExponent,
+    isSupportedPayPalCurrency,
     invoiceIdFor,
   };
 }
@@ -374,5 +389,6 @@ module.exports = {
   currencyExponent,
   toPayPalAmount,
   fromPayPalAmount,
+  isSupportedPayPalCurrency,
   invoiceIdFor,
 };
