@@ -119,6 +119,8 @@ GOOGLE_OIDC_ISSUER=https://accounts.google.com
 GOOGLE_OIDC_SCOPES=openid email profile
 ```
 
+`GOOGLE_OIDC_REDIRECT_URI` must use the Vercel frontend origin, not the Render service origin. The single-use `mandate.oauth_tx` cookie is set on the frontend origin; a Render-origin callback cannot receive it, and production startup now rejects that mismatch.
+
 PayPal Sandbox:
 
 ```env

@@ -43,8 +43,10 @@ function createOAuthTransactionStore({ collection = null, ttlMs = 10 * 60 * 1000
     return record.transactionId;
   }
 
-  async function consume({ transactionId, state, kind } = {}) {
-    if (!transactionId || typeof transactionId !== 'string') return null;
+  async function consumeWithReason({ transactionId, state, kind } = {}) {
+    if (!transactionId || typeof transactionId !== 'string') {
+      return { record: null, reason: 'missing_transaction_id' };
+    }
     let record = null;
     if (collection) {
       record = await collection.findOne({ transactionId });
@@ -58,11 +60,17 @@ function createOAuthTransactionStore({ collection = null, ttlMs = 10 * 60 * 1000
       record = memory.get(transactionId) || null;
       memory.delete(transactionId);
     }
-    if (!record) return null;
-    if (kind && record.kind !== kind) return null;
-    if (!state || typeof state !== 'string' || state !== record.state) return null;
-    if (!record.expiresAt || Date.parse(record.expiresAt) < now()) return null;
-    return clone(record);
+    if (!record) return { record: null, reason: 'not_found' };
+    if (kind && record.kind !== kind) return { record: null, reason: 'kind_mismatch' };
+    if (!state || typeof state !== 'string') return { record: null, reason: 'missing_state' };
+    if (state !== record.state) return { record: null, reason: 'state_mismatch' };
+    if (!record.expiresAt || Date.parse(record.expiresAt) < now()) return { record: null, reason: 'expired' };
+    return { record: clone(record), reason: null };
+  }
+
+  async function consume(args) {
+    const { record } = await consumeWithReason(args);
+    return record;
   }
 
   function size() { return memory.size; }
@@ -73,7 +81,7 @@ function createOAuthTransactionStore({ collection = null, ttlMs = 10 * 60 * 1000
     try { await collection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }); } catch { /* TTL best-effort */ }
   }
 
-  return { create, consume, size, ensureIndexes };
+  return { create, consume, consumeWithReason, size, ensureIndexes };
 }
 
 module.exports = { createOAuthTransactionStore };

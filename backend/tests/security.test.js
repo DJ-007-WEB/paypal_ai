@@ -577,6 +577,176 @@ test('rate limiting uses the client IP from X-Forwarded-For behind the proxy', a
   } finally { await closeServer(server); }
 });
 
+test('production Google callback must use the browser-facing frontend origin', () => {
+  const prodBase = {
+    NODE_ENV: 'production',
+    MONGODB_URI: 'mongodb://db.internal:27017/mandate',
+    MONGODB_DB_NAME: 'mandate',
+    FRONTEND_ORIGIN: 'https://app.example.com',
+    APP_BASE_URL: 'https://api.example.com',
+    FRONTEND_BASE_URL: 'https://app.example.com',
+    SESSION_SECRET: 'a-very-long-random-secret-value-0123456789abcdef',
+    SESSION_COOKIE_SECURE: 'true',
+    GOOGLE_OIDC_ENABLED: 'true',
+    GOOGLE_OIDC_CLIENT_ID: 'client-id',
+    GOOGLE_OIDC_CLIENT_SECRET: 'client-secret',
+  };
+
+  const frontendCallback = 'https://app.example.com/api/auth/google/callback';
+  assert.equal(
+    testConfig({ ...prodBase, GOOGLE_OIDC_REDIRECT_URI: frontendCallback }).GOOGLE_OIDC_REDIRECT_URI,
+    frontendCallback
+  );
+
+  // The transaction cookie is host-scoped to the Vercel origin, so a Render
+  // callback URL cannot read it.
+  assert.throws(
+    () => testConfig({ ...prodBase, GOOGLE_OIDC_REDIRECT_URI: 'https://api.example.com/api/auth/google/callback' }),
+    /frontend origin/
+  );
+  assert.throws(
+    () => testConfig({ ...prodBase, GOOGLE_OIDC_REDIRECT_URI: 'https://app.example.com/auth/callback' }),
+    /\/api\/auth\/google\/callback/
+  );
+});
+
+test('Google login succeeds with the transaction cookie and preserves state, nonce, and PKCE', async () => {
+  const crypto = require('node:crypto');
+  const config = testConfig({
+    GOOGLE_OIDC_ENABLED: 'true',
+    GOOGLE_OIDC_CLIENT_ID: 'client-id',
+    GOOGLE_OIDC_CLIENT_SECRET: 'client-secret',
+    GOOGLE_OIDC_REDIRECT_URI: 'http://localhost:5173/api/auth/google/callback',
+  });
+  const exchangeCalls = [];
+  const oidcExchange = async (args) => {
+    exchangeCalls.push(args);
+    return { sub: 'google-sub-1', email: 'user@example.com', email_verified: true, name: 'Test User' };
+  };
+  const app = createApp({
+    config,
+    vendorCollection: new FakeCollection(),
+    allowTestPrincipal: false,
+    oidcExchange,
+  });
+  const server = await new Promise((resolve, reject) => {
+    const s = app.listen(0, () => resolve(s));
+    s.on('error', reject);
+  });
+  try {
+    const { port } = server.address();
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    const start = await fetch(`${baseUrl}/api/auth/google`, { redirect: 'manual' });
+    assert.equal(start.status, 302);
+    const authUrl = new URL(start.headers.get('location'));
+    const state = authUrl.searchParams.get('state');
+    const nonce = authUrl.searchParams.get('nonce');
+    const challenge = authUrl.searchParams.get('code_challenge');
+    assert.equal(authUrl.searchParams.get('redirect_uri'), config.GOOGLE_OIDC_REDIRECT_URI);
+    assert.ok(state && nonce && challenge);
+
+    const startCookies = start.headers.getSetCookie();
+    const txCookie = startCookies.find((cookie) => cookie.startsWith('mandate.oauth_tx='));
+    assert.ok(txCookie, 'transaction cookie must be issued');
+    assert.match(txCookie, /Path=\/api\/auth\/google/);
+    assert.match(txCookie, /HttpOnly/);
+    assert.match(txCookie, /SameSite=Lax/);
+    const txCookiePair = txCookie.split(';')[0];
+
+    const callback = await fetch(
+      `${baseUrl}/api/auth/google/callback?code=test-code&state=${encodeURIComponent(state)}`,
+      { redirect: 'manual', headers: { Cookie: txCookiePair } }
+    );
+    assert.equal(callback.status, 302);
+    assert.equal(callback.headers.get('location'), 'http://localhost:5173/app/dashboard?auth=success');
+
+    const callbackCookies = callback.headers.getSetCookie();
+    assert.ok(callbackCookies.some((cookie) => cookie.startsWith('mandate.oauth_tx=;')), 'transaction cookie is cleared');
+    const sessionCookie = callbackCookies.find((cookie) => cookie.startsWith(`${config.SESSION_COOKIE_NAME}=`));
+    assert.ok(sessionCookie, 'session cookie must be issued');
+
+    assert.equal(exchangeCalls.length, 1);
+    assert.equal(exchangeCalls[0].code, 'test-code');
+    assert.equal(exchangeCalls[0].state, state);
+    assert.equal(exchangeCalls[0].nonce, nonce);
+    assert.ok(exchangeCalls[0].codeVerifier);
+    assert.equal(
+      crypto.createHash('sha256').update(exchangeCalls[0].codeVerifier).digest('base64url'),
+      challenge,
+      'PKCE verifier must match the authorization challenge'
+    );
+
+    const sessionRes = await fetch(`${baseUrl}/api/auth/session`, {
+      headers: { Cookie: sessionCookie.split(';')[0] },
+    });
+    const sessionBody = await sessionRes.json();
+    assert.equal(sessionBody.data.authenticated, true);
+    assert.equal(sessionBody.data.user.email, 'user@example.com');
+  } finally { await closeServer(server); }
+});
+
+test('callback failures log a specific safe reason and fail closed', async (t) => {
+  const logs = [];
+  t.mock.method(console, 'error', (...args) => logs.push(args.join(' ')));
+
+  const config = testConfig({
+    GOOGLE_OIDC_ENABLED: 'true',
+    GOOGLE_OIDC_CLIENT_ID: 'client-id',
+    GOOGLE_OIDC_CLIENT_SECRET: 'client-secret',
+    GOOGLE_OIDC_REDIRECT_URI: 'http://localhost:5173/api/auth/google/callback',
+  });
+  const app = createApp({ config, vendorCollection: new FakeCollection(), allowTestPrincipal: false });
+  const server = await new Promise((resolve, reject) => {
+    const s = app.listen(0, () => resolve(s));
+    s.on('error', reject);
+  });
+  try {
+    const { port } = server.address();
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    // Missing transaction cookie: the exact production failure mode when the
+    // callback lands on a different host than the one that set the cookie.
+    const missing = await fetch(
+      `${baseUrl}/api/auth/google/callback?code=secret-code&state=secret-state`,
+      { redirect: 'manual', headers: { Accept: 'application/json' } }
+    );
+    assert.equal(missing.status, 400);
+    const missingBody = await missing.json();
+    assert.equal(missingBody.error.code, 'OAUTH_TRANSACTION_INVALID');
+    let entry = logs.find((line) => line.includes('[AUTH]') && line.includes('transaction_cookie_missing'));
+    assert.ok(entry, 'missing cookie reason must be logged');
+    assert.ok(!entry.includes('secret-code'));
+    assert.ok(!entry.includes('secret-state'));
+
+    // State mismatch consumes the transaction and is logged precisely.
+    const start = await fetch(`${baseUrl}/api/auth/google`, { redirect: 'manual' });
+    const authUrl = new URL(start.headers.get('location'));
+    const state = authUrl.searchParams.get('state');
+    const txCookie = start.headers.getSetCookie()
+      .find((cookie) => cookie.startsWith('mandate.oauth_tx='))
+      .split(';')[0];
+
+    const mismatch = await fetch(
+      `${baseUrl}/api/auth/google/callback?code=test-code&state=wrong-state`,
+      { redirect: 'manual', headers: { Accept: 'application/json', Cookie: txCookie } }
+    );
+    assert.equal(mismatch.status, 400);
+    assert.equal((await mismatch.json()).error.code, 'OAUTH_TRANSACTION_INVALID');
+    entry = logs.find((line) => line.includes('[AUTH]') && line.includes('transaction_state_mismatch'));
+    assert.ok(entry, 'state mismatch reason must be logged');
+
+    // The mis-matching callback consumed the single-use transaction.
+    const replay = await fetch(
+      `${baseUrl}/api/auth/google/callback?code=test-code&state=${encodeURIComponent(state)}`,
+      { redirect: 'manual', headers: { Accept: 'application/json', Cookie: txCookie } }
+    );
+    assert.equal(replay.status, 400);
+    entry = logs.find((line) => line.includes('[AUTH]') && line.includes('transaction_not_found'));
+    assert.ok(entry, 'replayed transaction reason must be logged');
+  } finally { await closeServer(server); }
+});
+
 test('recommendation never authorizes payment (regression guard)', async () => {
   const { baseUrl, server, headersA } = await startTwoTenantApp({ vendorSeedA: [offer()] });
   try {

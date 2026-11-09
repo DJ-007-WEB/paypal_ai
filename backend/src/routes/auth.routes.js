@@ -87,8 +87,39 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
   function transactionCookieHeader(transactionId) {
     const parts = [`mandate.oauth_tx=${encodeURIComponent(transactionId)}`, 'Path=/api/auth/google', 'HttpOnly', 'Max-Age=600'];
     if (config.SESSION_COOKIE_SECURE) parts.push('Secure');
+    if (config.SESSION_COOKIE_DOMAIN) parts.push(`Domain=${config.SESSION_COOKIE_DOMAIN}`);
     parts.push('SameSite=Lax');
     return parts.join('; ');
+  }
+
+  function clearTransactionCookieHeader() {
+    const parts = ['mandate.oauth_tx=', 'Path=/api/auth/google', 'HttpOnly', 'Max-Age=0', 'Expires=Thu, 01 Jan 1970 00:00:00 GMT'];
+    if (config.SESSION_COOKIE_SECURE) parts.push('Secure');
+    if (config.SESSION_COOKIE_DOMAIN) parts.push(`Domain=${config.SESSION_COOKIE_DOMAIN}`);
+    parts.push('SameSite=Lax');
+    return parts.join('; ');
+  }
+
+  // Structured failure logs contain only an allowlisted reason, request ID, and
+  // error metadata. Never log query strings, codes, state, cookies, tokens, or PII.
+  function logAuthFailure(req, reason, err) {
+    const entry = {
+      event: 'oidc_callback_failed',
+      reason: String(reason || 'unknown'),
+      requestId: req.requestId || null,
+      errorCode: err && typeof err.code === 'string' ? err.code : null,
+      errorName: err && typeof err.name === 'string' ? err.name : null,
+      statusCode: err && Number.isInteger(err.statusCode) ? err.statusCode : null,
+    };
+    console.error(`[AUTH] ${JSON.stringify(entry)}`);
+  }
+
+  async function consumeOidcTransaction({ transactionId, state }) {
+    if (typeof transactions.consumeWithReason === 'function') {
+      return transactions.consumeWithReason({ transactionId, state, kind: 'oidc' });
+    }
+    const record = await transactions.consume({ transactionId, state, kind: 'oidc' });
+    return { record, reason: record ? null : 'invalid_or_expired' };
   }
 
   function parseTransactionCookie(req) {
@@ -131,6 +162,7 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
 
   // Callback: GET /api/auth/google/callback?code=...&state=...
   router.get('/auth/google/callback', async (req, res, next) => {
+    let failureReason = 'callback_failed';
     try {
       if (!config.GOOGLE_OIDC_ENABLED) {
         return res.status(501).json({
@@ -138,25 +170,34 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
           error: { code: 'OIDC_NOT_CONFIGURED', message: 'Google sign-in is not configured.' },
         });
       }
-      const { code, state, error: providerError, error_description } = req.query || {};
+      const { code, state, error: providerError } = req.query || {};
       const transactionId = parseTransactionCookie(req);
-      // Clear transaction cookie immediately (single-use)
-      res.set('Set-Cookie', 'mandate.oauth_tx=; Path=/api/auth/google; HttpOnly; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT');
+      // Clear transaction cookie immediately (single-use). Use append so the
+      // session cookie set later on success does not replace this header.
+      res.append('Set-Cookie', clearTransactionCookieHeader());
 
       if (providerError) {
-        await safeAudit('SIGN_IN_FAILED', { reason: 'provider_error' });
+        failureReason = 'provider_error';
+        logAuthFailure(req, failureReason, null);
+        await safeAudit('SIGN_IN_FAILED', { reason: failureReason });
         return res.redirect(302, frontendRedirect(config, '/login?error=cancelled'));
       }
-      if (!code || typeof code !== 'string' || !state || typeof state !== 'string' || !transactionId) {
-        await safeAudit('SIGN_IN_FAILED', { reason: 'invalid_transaction' });
+      if (!transactionId) {
+        failureReason = 'transaction_cookie_missing';
+      } else if (!code || typeof code !== 'string') {
+        failureReason = 'authorization_code_missing';
+      } else if (!state || typeof state !== 'string') {
+        failureReason = 'state_missing';
+      }
+      if (failureReason !== 'callback_failed') {
         const err = new Error('Invalid OAuth transaction. Please try signing in again.');
         err.statusCode = 400;
         err.code = 'OAUTH_TRANSACTION_INVALID';
         throw err;
       }
-      const tx = await transactions.consume({ transactionId, state, kind: 'oidc' });
+      const { record: tx, reason: consumeReason } = await consumeOidcTransaction({ transactionId, state });
       if (!tx) {
-        await safeAudit('SIGN_IN_FAILED', { reason: 'expired_or_replayed_transaction' });
+        failureReason = `transaction_${consumeReason || 'invalid'}`;
         const err = new Error('OAuth transaction has expired or was already used. Please try again.');
         err.statusCode = 400;
         err.code = 'OAUTH_TRANSACTION_INVALID';
@@ -164,6 +205,8 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
       }
 
       // Exchange code server-side only + validate ID token via trusted library.
+      // The same configured redirect URI is used for authorization and exchange.
+      failureReason = 'token_exchange_failed';
       let claims;
       if (oidcExchange) {
         claims = await oidcExchange({ code, codeVerifier: tx.codeVerifier, nonce: tx.nonce, state });
@@ -171,21 +214,22 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
         claims = await exchangeWithGoogle({ config, code, codeVerifier: tx.codeVerifier, nonce: tx.nonce, state });
       }
 
+      failureReason = 'invalid_claims';
       if (!claims || !claims.sub) {
-        await safeAudit('SIGN_IN_FAILED', { reason: 'invalid_claims' });
         const err = new Error('Sign-in failed: invalid identity.');
         err.statusCode = 401;
         err.code = 'OIDC_VALIDATION_FAILED';
         throw err;
       }
+      failureReason = 'email_not_verified';
       if (!claims.email || !claims.email_verified) {
-        await safeAudit('SIGN_IN_FAILED', { reason: 'email_not_verified' });
         const err = new Error('A verified Google email is required to sign in.');
         err.statusCode = 401;
         err.code = 'EMAIL_NOT_VERIFIED';
         throw err;
       }
 
+      failureReason = 'user_upsert_failed';
       const user = await userService.findOrCreateFromOidc({
         googleSubject: claims.sub,
         email: String(claims.email).toLowerCase(),
@@ -194,12 +238,15 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
       });
 
       // Rotate application session after successful login
+      failureReason = 'session_creation_failed';
       const session = await sessionStore.create(user.userId);
-      res.set('Set-Cookie', sessionStore.buildCookieHeader(session.sessionId));
+      res.append('Set-Cookie', sessionStore.buildCookieHeader(session.sessionId));
       // Auto-create workspace for new users on first Google sign-in
+      failureReason = 'workspace_bootstrap_failed';
       await maybeCreateFirstWorkspace({ user, tenantService });
       // CSRF token for SPA: expose via non-HttpOnly readable endpoint (/api/auth/session), not cookie value.
       await safeAudit('SIGN_IN_SUCCEEDED', { actorId: user.userId });
+      failureReason = 'redirect_failed';
       return res.redirect(302, frontendRedirect(config, '/app/dashboard?auth=success'));
     } catch (err) {
       // Never expose provider payloads, codes, or tokens.
@@ -208,12 +255,14 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
         err.code = 'OIDC_PROVIDER_ERROR';
         err.message = 'Sign-in failed due to a provider error. Please try again.';
       }
+      logAuthFailure(req, failureReason, err);
+      await safeAudit('SIGN_IN_FAILED', { reason: failureReason });
       // For callback, redirect to login with generic error unless API request expects JSON
       const acceptsJson = (req.get('Accept') || '').includes('application/json');
       if (!acceptsJson && err.statusCode !== 500) {
         try {
           return res.redirect(302, frontendRedirect(config, '/login?error=auth_failed'));
-        } catch { /* fall fall through to JSON */ }
+        } catch { /* fall through to JSON */ }
       }
       next(err);
     }

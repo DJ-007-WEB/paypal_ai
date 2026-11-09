@@ -196,6 +196,23 @@ function loadConfig(env = process.env) {
     if (!GOOGLE_OIDC_CLIENT_SECRET) throw new Error('GOOGLE_OIDC_CLIENT_SECRET is required when GOOGLE_OIDC_ENABLED=true.');
     if (!GOOGLE_OIDC_REDIRECT_URI) throw new Error('GOOGLE_OIDC_REDIRECT_URI is required when GOOGLE_OIDC_ENABLED=true.');
     parseUrl(GOOGLE_OIDC_REDIRECT_URI, { name: 'GOOGLE_OIDC_REDIRECT_URI', required: true, isProd });
+    const oidcRedirect = new URL(GOOGLE_OIDC_REDIRECT_URI);
+    if (oidcRedirect.pathname !== '/api/auth/google/callback') {
+      throw new Error(`GOOGLE_OIDC_REDIRECT_URI must point to /api/auth/google/callback. Got path: ${oidcRedirect.pathname}`);
+    }
+    if (isProd) {
+      const frontendOrigin = new URL(FRONTEND_BASE_URL).origin;
+      const backendOrigin = new URL(APP_BASE_URL).origin;
+      if (oidcRedirect.origin !== frontendOrigin && oidcRedirect.origin !== backendOrigin) {
+        throw new Error('GOOGLE_OIDC_REDIRECT_URI must use the configured FRONTEND_BASE_URL or APP_BASE_URL origin.');
+      }
+      // When the frontend proxies /api to this service, the browser-facing origin
+      // is the frontend. The single-use mandate.oauth_tx cookie is set on that
+      // origin, so a direct backend callback cannot read it and every login fails.
+      if (frontendOrigin !== backendOrigin && oidcRedirect.origin === backendOrigin) {
+        throw new Error(`GOOGLE_OIDC_REDIRECT_URI must use the frontend origin (${frontendOrigin}) when the frontend proxies /api to this service. A backend-origin callback cannot receive the mandate.oauth_tx cookie.`);
+      }
+    }
     if (!GOOGLE_OIDC_ISSUER.startsWith('https://')) throw new Error('GOOGLE_OIDC_ISSUER must be an https URL.');
   } else if (GOOGLE_OIDC_REDIRECT_URI) {
     // Validate shape even when disabled so misconfiguration is caught early
