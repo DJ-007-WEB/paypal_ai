@@ -560,6 +560,15 @@ function PurchaseDesk({ defaults }) {
     return () => { alive = false; };
   }, []);
   const set = (key, value) => setForm((s) => ({ ...s, [key]: value }));
+  function changeCurrency(nextCurrency) {
+    const currency = String(nextCurrency || '').trim().toUpperCase();
+    if (!SUPPORTED_CURRENCIES.includes(currency) || currency === form.currency) return;
+    setForm((current) => ({ ...current, currency, budget: '' }));
+    setResult(null);
+    setSubmitted(null);
+    setError('');
+    setErrorKind('');
+  }
 
   function classifyError(message) {
     const m = String(message || '').toLowerCase();
@@ -584,17 +593,23 @@ function PurchaseDesk({ defaults }) {
         },
       });
       const request = data?.request || {};
-      setForm((current) => ({
-        ...current,
-        ...(request.productId ? { productId: request.productId } : {}),
-        ...(request.quantity != null ? { quantity: String(request.quantity) } : {}),
-        ...(request.currency ? { currency: request.currency } : {}),
-        ...(request.maxTotalMinor != null && request.currency ? { budget: String(minorToMajor(request.maxTotalMinor, request.currency)) } : {}),
-        ...(request.maxDeliveryDays != null ? { maxDeliveryDays: String(request.maxDeliveryDays) } : {}),
-        ...(request.minQualityScore != null ? { minQualityScore: String(request.minQualityScore) } : {}),
-        ...(request.minReliabilityScore != null ? { minReliabilityScore: String(request.minReliabilityScore) } : {}),
-        ...(typeof request.requireApprovedVendor === 'boolean' ? { requireApprovedVendor: request.requireApprovedVendor } : {}),
-      }));
+      setForm((current) => {
+        const nextCurrency = String(request.currency || current.currency).trim().toUpperCase();
+        const currencyChanged = nextCurrency !== current.currency;
+        return {
+          ...current,
+          ...(request.productId ? { productId: request.productId } : {}),
+          ...(request.quantity != null ? { quantity: String(request.quantity) } : {}),
+          currency: nextCurrency,
+          ...(request.maxTotalMinor != null
+            ? { budget: String(minorToMajor(request.maxTotalMinor, nextCurrency)) }
+            : currencyChanged ? { budget: '' } : {}),
+          ...(request.maxDeliveryDays != null ? { maxDeliveryDays: String(request.maxDeliveryDays) } : {}),
+          ...(request.minQualityScore != null ? { minQualityScore: String(request.minQualityScore) } : {}),
+          ...(request.minReliabilityScore != null ? { minReliabilityScore: String(request.minReliabilityScore) } : {}),
+          ...(typeof request.requireApprovedVendor === 'boolean' ? { requireApprovedVendor: request.requireApprovedVendor } : {}),
+        };
+      });
       setResult(null); setSubmitted(null); setOnline(true);
       const issues = [
         ...(data?.warnings || []),
@@ -672,7 +687,7 @@ function PurchaseDesk({ defaults }) {
                   rows={3}
                   value={aiText}
                   onChange={(e) => setAiText(e.target.value)}
-                  placeholder="e.g. Buy 40 units of BRG-6204 under ₹20,000 total, delivered within 5 days, quality and reliability at least 70."
+                  placeholder={`e.g. Buy 40 units of BRG-6204 under 250 ${form.currency} total, delivered within 5 days, quality and reliability at least 70.`}
                   maxLength={4000}
                 />
               </label>
@@ -710,8 +725,9 @@ function PurchaseDesk({ defaults }) {
             <div><span className="field-label">Budget and delivery</span></div>
             <div className="field-pair">
               <label>Delivery within (days)<input type="number" min="0" max="365" value={form.maxDeliveryDays} onChange={(e) => set('maxDeliveryDays', e.target.value)} required /></label>
-              <label>Currency<select value={form.currency} onChange={(e) => set('currency', e.target.value)}>{SUPPORTED_CURRENCIES.map((c) => <option key={c}>{c}</option>)}</select></label>
+              <label>Currency<select value={form.currency} onChange={(e) => changeCurrency(e.target.value)}>{SUPPORTED_CURRENCIES.map((c) => <option key={c}>{c}</option>)}</select></label>
             </div>
+            <p className="muted-note">All purchase amounts and vendor offers must use {form.currency}. Changing currency clears the budget so an amount from another currency is never reused.</p>
             <div className="form-divider">Quality &amp; compliance</div>
             <div className="field-pair">
               <label>Minimum quality (0–100)<input type="number" min="0" max="100" value={form.minQualityScore} onChange={(e) => set('minQualityScore', e.target.value)} required /></label>
