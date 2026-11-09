@@ -90,7 +90,7 @@ The supported topology is a Vercel frontend project (`frontend/`) proxying `/api
 - Build command: `npm ci`
 - Start command: `npm start`
 - Health check path: `/api/health`
-- Set `TRUST_PROXY=true` when Render terminates TLS in front of the service.
+- Set `TRUST_PROXY=1` when Render terminates TLS in front of the service. This is an explicit trusted hop count, not blind trust.
 
 Required production variables:
 
@@ -102,7 +102,7 @@ MONGODB_DB_NAME=mandate
 FRONTEND_ORIGIN=https://paypal-aifrontend.vercel.app
 APP_BASE_URL=https://paypal-ai-m3dq.onrender.com
 FRONTEND_BASE_URL=https://paypal-aifrontend.vercel.app
-TRUST_PROXY=true
+TRUST_PROXY=1
 SESSION_SECRET=<long random value>
 SESSION_COOKIE_SECURE=true
 SESSION_COOKIE_SAME_SITE=lax

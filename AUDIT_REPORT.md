@@ -224,7 +224,7 @@ All modified backend source files and tests were checked with `node --check`.
 
 These cannot be completed from the repository; they must be applied in the provider dashboards:
 
-1. **Render environment variables** — set `MONGODB_URI`, `SESSION_SECRET`, `GOOGLE_OIDC_*`, `PAYPAL_*` (including `PAYPAL_WEBHOOK_ID`), `FRONTEND_ORIGIN`, `APP_BASE_URL`, `FRONTEND_BASE_URL`, `TRUST_PROXY=true`, `SESSION_COOKIE_SECURE=true`. Do not put these in Vercel `VITE_*`.
+1. **Render environment variables** — set `MONGODB_URI`, `SESSION_SECRET`, `GOOGLE_OIDC_*`, `PAYPAL_*` (including `PAYPAL_WEBHOOK_ID`), `FRONTEND_ORIGIN`, `APP_BASE_URL`, `FRONTEND_BASE_URL`, `TRUST_PROXY=1`, `SESSION_COOKIE_SECURE=true`. Do not put these in Vercel `VITE_*`.
 2. **Google Cloud OAuth** — register authorized origin `https://paypal-aifrontend.vercel.app` and redirect URI `https://paypal-aifrontend.vercel.app/api/auth/google/callback` (plus Gmail callback only if enabled).
 3. **PayPal Developer Sandbox** — create a Sandbox app, set return/cancel URLs to `https://paypal-aifrontend.vercel.app/app/approvals?paypal=return|cancel`, register webhook `https://paypal-ai-m3dq.onrender.com/api/payments/webhook`, and copy the webhook ID to Render.
 4. **Vercel** — set the project root to `frontend`, framework Vite, build `npm run build`, output `dist`; `frontend/vercel.json` handles the API proxy and SPA fallback.

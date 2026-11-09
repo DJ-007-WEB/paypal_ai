@@ -57,6 +57,10 @@ function createApp(options = {}) {
 
   const app = express();
   app.disable('x-powered-by');
+  // config.TRUST_PROXY is already validated: false, a numeric hop count (e.g. 1
+  // for Render's reverse proxy), or an explicit IP/CIDR list. A numeric count
+  // makes Express resolve req.ip from X-Forwarded-For, which express-rate-limit
+  // uses as its rate-limit key.
   app.set('trust proxy', config.TRUST_PROXY);
 
   // --- Secure HTTP headers (Helmet) + tested CSP ---

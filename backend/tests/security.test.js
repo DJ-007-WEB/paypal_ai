@@ -526,6 +526,57 @@ test('production startup rejects insecure configuration', async () => {
   assert.throws(() => testConfig({ ...prodBase, FRONTEND_ORIGIN: 'https://app.example.com,http://localhost:5173' }), /localhost/);
 });
 
+test('TRUST_PROXY accepts an explicit hop count and still rejects blind trust in production', () => {
+  const prodBase = {
+    NODE_ENV: 'production',
+    MONGODB_URI: 'mongodb://db.internal:27017/mandate',
+    MONGODB_DB_NAME: 'mandate',
+    FRONTEND_ORIGIN: 'https://app.example.com',
+    APP_BASE_URL: 'https://api.example.com',
+    FRONTEND_BASE_URL: 'https://app.example.com',
+    SESSION_SECRET: 'a-very-long-random-secret-value-0123456789abcdef',
+    SESSION_COOKIE_SECURE: 'true',
+  };
+
+  // Render terminates TLS in front of the service, so one trusted hop.
+  assert.equal(testConfig({ TRUST_PROXY: '1' }).TRUST_PROXY, 1);
+  assert.equal(testConfig({ ...prodBase, TRUST_PROXY: '1' }).TRUST_PROXY, 1);
+  assert.equal(testConfig({ TRUST_PROXY: '2' }).TRUST_PROXY, 2);
+  assert.equal(testConfig({ TRUST_PROXY: '0' }).TRUST_PROXY, false);
+  assert.equal(testConfig({ TRUST_PROXY: 'false' }).TRUST_PROXY, false);
+
+  // Blind trust remains dev-only.
+  assert.equal(testConfig({ TRUST_PROXY: 'true' }).TRUST_PROXY, true);
+  assert.throws(() => testConfig({ ...prodBase, TRUST_PROXY: 'true' }), /blindly trust all proxies/);
+
+  const app = createApp({
+    config: testConfig({ TRUST_PROXY: '1' }),
+    vendorCollection: new FakeCollection(),
+    allowTestPrincipal: false,
+  });
+  assert.equal(app.get('trust proxy'), 1, 'Express must receive the numeric hop count');
+});
+
+test('rate limiting uses the client IP from X-Forwarded-For behind the proxy', async () => {
+  const config = testConfig({ TRUST_PROXY: '1', RATE_LIMIT_MAX_REQUESTS: '1', RATE_LIMIT_WINDOW_MS: '60000' });
+  const app = createApp({ config, vendorCollection: new FakeCollection(), allowTestPrincipal: false });
+  const server = await new Promise((resolve, reject) => {
+    const s = app.listen(0, () => resolve(s));
+    s.on('error', reject);
+  });
+  try {
+    const { port } = server.address();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const hit = (clientIp) => fetch(`${baseUrl}/api/health`, { headers: { 'X-Forwarded-For': clientIp } });
+
+    assert.equal((await hit('203.0.113.10')).status, 200);
+    // A different forwarded client IP has its own bucket, proving the limiter
+    // keys on req.ip rather than the proxy's socket address.
+    assert.equal((await hit('203.0.113.11')).status, 200);
+    assert.equal((await hit('203.0.113.10')).status, 429);
+  } finally { await closeServer(server); }
+});
+
 test('recommendation never authorizes payment (regression guard)', async () => {
   const { baseUrl, server, headersA } = await startTwoTenantApp({ vendorSeedA: [offer()] });
   try {

@@ -28,7 +28,7 @@ Key rules:
 - `GOOGLE_GMAIL_ENABLED=false` until credentials, callback, the read-only scope, and `TOKEN_ENCRYPTION_KEY` are configured. Sign-in scopes stay identity-only.
 - `PAYPAL_ENV=sandbox` only. Live PayPal is rejected at startup. Credentials must be paired, and `PAYPAL_WEBHOOK_ID` is required in production when PayPal is enabled.
 - `KMS_KEY_ID` alone is not implemented. Set `TOKEN_ENCRYPTION_KEY` (base64 32-byte key or 64-char hex) to encrypt Gmail refresh tokens.
-- Production startup rejects insecure configuration: HTTP base/callback URLs, `SESSION_COOKIE_SECURE=false`, weak `SESSION_SECRET`, localhost `FRONTEND_ORIGIN`, or blind `TRUST_PROXY=true`.
+- Production startup rejects insecure configuration: HTTP base/callback URLs, `SESSION_COOKIE_SECURE=false`, weak `SESSION_SECRET`, localhost `FRONTEND_ORIGIN`, or blind `TRUST_PROXY=true`. Behind Render's single reverse proxy, set the explicit hop count `TRUST_PROXY=1`.
 - Never prefix server secrets with `VITE_*` and never place them in frontend code, browser storage, URLs, or logs.
 
 MongoDB collections used in production: `vendorOffers`, `users`, `tenants`, `memberships`, `sessions`, `purchases`, `auditEvents`, `gmailConnections`, `oauthTransactions`, `paypalWebhookEvents`. Indexes are created in `src/server.js`. `scripts/migrate-tenant-isolation.js --dry-run` should be reviewed before applying compound indexes to legacy data.

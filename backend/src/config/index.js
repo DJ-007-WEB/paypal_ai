@@ -132,12 +132,16 @@ function loadConfig(env = process.env) {
   });
 
   const TRUST_PROXY_RAW = env.TRUST_PROXY === undefined || env.TRUST_PROXY === '' ? 'false' : String(env.TRUST_PROXY).trim();
+  const TRUST_PROXY_NORMALIZED = TRUST_PROXY_RAW.toLowerCase();
   let TRUST_PROXY = false;
-  if (['false', '0'].includes(TRUST_PROXY_RAW.toLowerCase())) TRUST_PROXY = false;
-  else if (['true', '1'].includes(TRUST_PROXY_RAW.toLowerCase())) {
+  if (['false', '0'].includes(TRUST_PROXY_NORMALIZED)) {
+    TRUST_PROXY = false;
+  } else if (TRUST_PROXY_NORMALIZED === 'true') {
+    // Blindly trusting every proxy lets clients spoof X-Forwarded-For and bypass IP rate limits.
     if (isProd) throw new Error('TRUST_PROXY must never blindly trust all proxies in production. Set an explicit hop count or CIDR.');
     TRUST_PROXY = true;
   } else if (/^\d+$/.test(TRUST_PROXY_RAW)) {
+    // Explicit hop count (e.g. TRUST_PROXY=1 for Render's single reverse proxy).
     TRUST_PROXY = Number(TRUST_PROXY_RAW);
   } else {
     // Allow loopback / explicit CIDR / IP list string passthrough
