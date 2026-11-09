@@ -100,7 +100,10 @@ export default function ApprovalsPage({ permissions = null }) {
     (async () => {
       const params = new URLSearchParams(window.location.search);
       const mode = params.get('paypal');
-      if (!mode) return;
+      if (!mode) {
+        await load();
+        return;
+      }
       const token = params.get('token') || '';
       const clean = `${window.location.pathname}`;
       window.history.replaceState({}, '', clean);
