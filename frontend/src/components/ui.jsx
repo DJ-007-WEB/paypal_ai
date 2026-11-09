@@ -1,9 +1,10 @@
 import React from 'react';
-import { currencyExponent, minorToMajor } from '../currency.js';
+import { CURRENCY_EXPONENTS, currencyExponent, minorToMajor } from '../currency.js';
 
-export function formatMoney(minor, currency = 'INR') {
-  const value = Number(minor || 0);
-  const code = String(currency || 'INR').toUpperCase();
+export function formatMoney(minor, currency) {
+  const code = String(currency || '').trim().toUpperCase();
+  if (!code || !Object.hasOwn(CURRENCY_EXPONENTS, code) || minor === null || minor === undefined || !Number.isFinite(Number(minor))) return '—';
+  const value = Number(minor);
   const exponent = currencyExponent(code);
   try {
     const locale = code === 'INR' ? 'en-IN' : 'en-US';
