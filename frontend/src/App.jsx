@@ -632,13 +632,22 @@ function PurchaseDesk({ defaults }) {
     e.preventDefault(); setBusy(true); setError(''); setErrorKind(''); setResult(null); setSubmitted(null);
     const qty = Number(form.quantity);
     const budgetNum = Number(form.budget);
-    if (!form.productId.trim()) { setError('Enter a product / SKU before evaluating.'); setErrorKind('request-validation'); setBusy(false); return; }
-    if (!Number.isInteger(qty) || qty <= 0) { setError('Quantity must be a whole number greater than zero.'); setErrorKind('request-validation'); setBusy(false); return; }
-    if (!Number.isFinite(budgetNum) || budgetNum <= 0) { setError('Maximum budget must be a number greater than zero.'); setErrorKind('request-validation'); setBusy(false); return; }
+    const currency = String(form.currency || '').trim().toUpperCase();
+    const maxDeliveryDays = Number(form.maxDeliveryDays);
+    const minQualityScore = Number(form.minQualityScore);
+    const minReliabilityScore = Number(form.minReliabilityScore);
+    const maxTotalMinor = majorToMinor(budgetNum, currency);
+    const invalid = (message) => { setError(message); setErrorKind('request-validation'); setBusy(false); };
+    if (!form.productId.trim()) { invalid('Enter a product / SKU before evaluating.'); return; }
+    if (!Number.isInteger(qty) || qty <= 0) { invalid('Quantity must be a whole number greater than zero.'); return; }
+    if (!SUPPORTED_CURRENCIES.includes(currency)) { invalid('Choose a supported 3-letter currency code.'); return; }
+    if (!Number.isSafeInteger(maxTotalMinor) || maxTotalMinor <= 0) { invalid(`Enter a valid maximum budget in ${currency}.`); return; }
+    if (!Number.isInteger(maxDeliveryDays) || maxDeliveryDays < 0 || maxDeliveryDays > 365) { invalid('Delivery deadline must be a whole number from 0 to 365 days.'); return; }
+    if (!Number.isInteger(minQualityScore) || minQualityScore < 0 || minQualityScore > 100) { invalid('Minimum quality must be a whole number from 0 to 100.'); return; }
+    if (!Number.isInteger(minReliabilityScore) || minReliabilityScore < 0 || minReliabilityScore > 100) { invalid('Minimum reliability must be a whole number from 0 to 100.'); return; }
     const request = {
-      productId: form.productId.trim(), quantity: qty, maxTotalMinor: majorToMinor(budgetNum, form.currency),
-      currency: form.currency, maxDeliveryDays: Number(form.maxDeliveryDays),
-      minQualityScore: Number(form.minQualityScore), minReliabilityScore: Number(form.minReliabilityScore),
+      productId: form.productId.trim(), quantity: qty, maxTotalMinor,
+      currency, maxDeliveryDays, minQualityScore, minReliabilityScore,
       requireApprovedVendor: form.requireApprovedVendor,
     };
     try {
