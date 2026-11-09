@@ -52,6 +52,14 @@ async function start() {
   const webhookEventCollection = db.collection('paypalWebhookEvents');
   try { await userCollection.createIndex({ userId: 1 }, { unique: true }); } catch { /* ignore */ }
   try { await userCollection.createIndex({ googleSubject: 1 }, { unique: true }); } catch { /* ignore */ }
+  // Local email/password accounts must not share an email. Partial so existing
+  // Google-only users are unaffected by the unique constraint.
+  try {
+    await userCollection.createIndex(
+      { email: 1 },
+      { unique: true, partialFilterExpression: { passwordHash: { $exists: true } } }
+    );
+  } catch { /* ignore */ }
   try { await tenantCollection.createIndex({ tenantId: 1 }, { unique: true }); } catch { /* ignore */ }
   try { await membershipCollection.createIndex({ tenantId: 1, userId: 1 }, { unique: true }); } catch { /* ignore */ }
   try { await membershipCollection.createIndex({ userId: 1, status: 1 }); } catch { /* ignore */ }

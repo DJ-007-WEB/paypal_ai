@@ -1,4 +1,6 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
+// Auth uses host-only session cookies and CSRF tokens, so browser requests must
+// stay on the same origin. Vercel and the Vite dev server both proxy `/api`.
+const API_BASE_URL = '/api';
 
 const TENANT_KEY = 'mandate.selected.tenant.v1';
 let cachedCsrfToken = null;
@@ -124,6 +126,31 @@ export function loginWithGoogle() {
   // cookie is host-only, so starting at the Render API host would make the
   // Vercel callback unable to read it.
   window.location.href = '/api/auth/google';
+}
+
+async function submitPasswordAuth(path, body) {
+  const { response, parsed } = await rawRequest(path, { method: 'POST', body });
+  if (!response.ok || parsed.success === false) {
+    if (response.status === 401) {
+      throw new Error(parsed?.error?.message || 'Email or password is incorrect.');
+    }
+    if (response.status === 409) {
+      throw new Error(parsed?.error?.message || 'An account with this email already exists.');
+    }
+    throw requestError(parsed, 'Authentication failed', response.status);
+  }
+  if (parsed?.data?.csrfToken) cachedCsrfToken = parsed.data.csrfToken;
+  // Never carry a previous account's workspace selection into a new session.
+  setSelectedTenantId('');
+  return parsed.data;
+}
+
+export async function loginWithPassword(email, password) {
+  return submitPasswordAuth('/auth/login', { email, password });
+}
+
+export async function registerWithPassword({ email, password, displayName, businessName }) {
+  return submitPasswordAuth('/auth/register', { email, password, displayName, businessName });
 }
 
 export async function getSession() {

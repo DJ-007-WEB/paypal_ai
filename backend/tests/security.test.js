@@ -247,6 +247,103 @@ test('logout invalidates the session', async () => {
   } finally { await closeServer(server); }
 });
 
+test('email/password signup and login create isolated personal workspaces', async () => {
+  const config = testConfig();
+  const app = createApp({ config, vendorCollection: new FakeCollection(), allowTestPrincipal: false });
+  const { userService } = app.__services;
+  const server = await new Promise((resolve, reject) => {
+    const s = app.listen(0, () => resolve(s));
+    s.on('error', reject);
+  });
+  try {
+    const { port } = server.address();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const password = 'correct horse battery staple';
+    const sessionCookie = (response) => {
+      const cookie = response.headers.getSetCookie()
+        .find((value) => value.startsWith(`${config.SESSION_COOKIE_NAME}=`));
+      assert.ok(cookie, 'a session cookie must be issued');
+      return cookie.split(';')[0];
+    };
+
+    const signupA = await api(baseUrl, 'POST', '/api/auth/register', {
+      email: 'Alice@Example.com',
+      password,
+      displayName: 'Alice',
+      businessName: 'Alice Co',
+      // Client-supplied tenant IDs must never choose the new workspace.
+      tenantId: 'tenant_attacker',
+    });
+    assert.equal(signupA.status, 201);
+    assert.equal(signupA.body.data.user.email, 'alice@example.com');
+    assert.equal(signupA.body.data.authenticated, true);
+    assert.ok(!Object.prototype.hasOwnProperty.call(signupA.body.data.user, 'passwordHash'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(signupA.body.data.user, 'googleSubject'));
+    const cookieA = sessionCookie(signupA);
+    assert.match(cookieA, new RegExp(`^${config.SESSION_COOKIE_NAME}=`));
+
+    const storedA = await userService.findByEmail('alice@example.com');
+    assert.match(storedA.passwordHash, /^scrypt\$/);
+    assert.notEqual(storedA.passwordHash, password);
+    assert.equal(storedA.googleSubject, undefined, 'local users must not occupy the Google subject index');
+
+    const workspacesA = await api(baseUrl, 'GET', '/api/workspaces/me', null, { Cookie: cookieA });
+    assert.equal(workspacesA.status, 200);
+    assert.equal(workspacesA.body.data.memberships.length, 1);
+    const tenantA = workspacesA.body.data.memberships[0].tenantId;
+    assert.match(tenantA, /^tenant_personal_/);
+    assert.notEqual(tenantA, 'tenant_attacker');
+
+    const signupB = await api(baseUrl, 'POST', '/api/auth/register', {
+      email: 'bob@example.com',
+      password,
+      displayName: 'Bob',
+    });
+    assert.equal(signupB.status, 201);
+    const cookieB = sessionCookie(signupB);
+    const workspacesB = await api(baseUrl, 'GET', '/api/workspaces/me', null, { Cookie: cookieB });
+    assert.equal(workspacesB.status, 200);
+    assert.equal(workspacesB.body.data.memberships.length, 1);
+    const tenantB = workspacesB.body.data.memberships[0].tenantId;
+    assert.notEqual(tenantA, tenantB, 'each local user gets a separate workspace');
+
+    const duplicate = await api(baseUrl, 'POST', '/api/auth/register', {
+      email: 'alice@example.com', password, displayName: 'Other Alice',
+    });
+    assert.equal(duplicate.status, 409);
+    assert.equal(duplicate.body.error.code, 'EMAIL_IN_USE');
+
+    const wrong = await api(baseUrl, 'POST', '/api/auth/login', {
+      email: 'alice@example.com', password: 'wrong password value',
+    });
+    assert.equal(wrong.status, 401);
+    assert.equal(wrong.body.error.code, 'INVALID_CREDENTIALS');
+
+    const login = await api(baseUrl, 'POST', '/api/auth/login', {
+      email: 'alice@example.com', password,
+    });
+    assert.equal(login.status, 200);
+    assert.equal(login.body.data.user.email, 'alice@example.com');
+    assert.ok(!JSON.stringify(login.body).includes(storedA.passwordHash));
+    const loginCookie = sessionCookie(login);
+    const loginWorkspaces = await api(baseUrl, 'GET', '/api/workspaces/me', null, { Cookie: loginCookie });
+    assert.deepEqual(
+      loginWorkspaces.body.data.memberships.map((m) => m.tenantId),
+      [tenantA],
+      'login only resolves the authenticated user\'s workspace'
+    );
+
+    const crossTenant = await api(
+      baseUrl,
+      'GET',
+      '/api/vendors',
+      null,
+      { Cookie: cookieA, 'X-Tenant-Id': tenantB }
+    );
+    assert.equal(crossTenant.status, 403);
+  } finally { await closeServer(server); }
+});
+
 test('session ID rotates conceptually after login (old session destroyed on rotate)', async () => {
   const config = testConfig();
   const { createSessionStore } = require('../src/services/session.service');

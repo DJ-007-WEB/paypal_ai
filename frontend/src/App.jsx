@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { evaluatePurchase, explainPurchase, getAiStatus, getBusinessEmailStatus, getCurrentWorkspace, getGmailStatus, getHealth, getMyWorkspaces, getPurchaseById, getSession, getVendors, interpretPurchaseRequest, listAuditEvents, listPurchases, listWorkspaceMembers, loginWithGoogle, logout as apiLogout, setSelectedTenantId, updateWorkspace } from './api/client.js';
+import { evaluatePurchase, explainPurchase, getAiStatus, getBusinessEmailStatus, getCurrentWorkspace, getGmailStatus, getHealth, getMyWorkspaces, getPurchaseById, getSession, getVendors, interpretPurchaseRequest, listAuditEvents, listPurchases, listWorkspaceMembers, loginWithGoogle, loginWithPassword, logout as apiLogout, registerWithPassword, setSelectedTenantId, updateWorkspace } from './api/client.js';
 import { Button, EmptyState, InlineAlert, LoadingState, Logo, PageHeader, StatusBadge, ThemeControl, formatMoney, go } from './components/ui.jsx';
 import { SUPPORTED_CURRENCIES, majorToMinor, minorToMajor } from './currency.js';
 import VendorImportWizard from './components/VendorImportWizard.jsx';
@@ -131,9 +131,9 @@ function LandingPage() {
   );
 }
 
-/* ================= Auth (Google sign-in only; no local/demo credentials) ================= */
+/* ================= Auth (Google OAuth + local email/password) ================= */
 function AuthPage({ mode }) {
-  const [error] = useState(() => {
+  const [urlError] = useState(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       const code = params.get('error');
@@ -142,7 +142,33 @@ function AuthPage({ mode }) {
       return '';
     } catch { return ''; }
   });
+  const [formError, setFormError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [businessName, setBusinessName] = useState('');
   const signup = mode === 'signup';
+
+  async function submit(event) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setFormError('');
+    try {
+      if (signup) {
+        await registerWithPassword({ email, password, displayName, businessName });
+      } else {
+        await loginWithPassword(email, password);
+      }
+      go('/app/dashboard');
+    } catch (err) {
+      setFormError(err.message || 'Authentication failed. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="auth-page">
       <header className="auth-top"><Logo /><button className="text-button" onClick={() => go('/')}>← Back to Mandate</button></header>
@@ -157,15 +183,72 @@ function AuthPage({ mode }) {
         <section className="auth-card" aria-label={signup ? 'Create workspace' : 'Sign in'}>
           <span className="eyebrow">{signup ? 'Get started' : 'Welcome back'}</span>
           <h2>{signup ? 'Create your workspace' : 'Sign in to Mandate'}</h2>
-          <p>{signup ? 'Use your Google identity to start a server-validated session. You can set up business details after signing in.' : 'Continue to your procurement workspace.'}</p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, margin: '18px 0' }}>
-            <Button onClick={loginWithGoogle}>Continue with Google <span aria-hidden="true">→</span></Button>
-            <small className="muted-note">Secure sign-in via Google. Business data stays isolated per workspace; sign-in alone never grants mailbox access.</small>
+          <p>{signup ? 'Create an account with your email, or continue with Google. Business data stays isolated per workspace.' : 'Sign in with your email and password, or continue with Google.'}</p>
+          <form onSubmit={submit}>
+            {signup ? (
+              <>
+                <label>
+                  <span>Your name</span>
+                  <input
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    autoComplete="name"
+                    placeholder="Neelam Sharma"
+                    maxLength={120}
+                  />
+                </label>
+                <label>
+                  <span>Business name <small className="field-hint">(optional)</small></span>
+                  <input
+                    value={businessName}
+                    onChange={(e) => setBusinessName(e.target.value)}
+                    autoComplete="organization"
+                    placeholder="Your business"
+                    maxLength={120}
+                  />
+                </label>
+              </>
+            ) : null}
+            <label>
+              <span>Email</span>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+                placeholder="you@business.com"
+                required
+              />
+            </label>
+            <label>
+              <span>Password</span>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete={signup ? 'new-password' : 'current-password'}
+                placeholder={signup ? 'At least 12 characters' : 'Your password'}
+                minLength={signup ? 12 : undefined}
+                maxLength={128}
+                required
+              />
+            </label>
+            <Button type="submit" disabled={busy}>
+              {busy ? 'Please wait…' : signup ? 'Create account' : 'Sign in'}
+            </Button>
+          </form>
+          {formError || urlError ? <div className="form-error" role="alert" style={{ marginTop: 14 }}>{formError || urlError}</div> : null}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '18px 0 12px', color: 'var(--text-muted)', fontSize: 12, fontWeight: 700, letterSpacing: '0.06em' }}>
+            <span style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+            OR
+            <span style={{ flex: 1, height: 1, background: 'var(--border)' }} />
           </div>
-          <div className="demo-notice" role="note"><span aria-hidden="true">ⓘ</span><span><b>Google sign-in only</b><small>Mandate has no email/password accounts. The server verifies your Google identity before creating a session, and protected API calls return 401 when signed out.</small></span></div>
-          {error ? <div className="form-error" role="alert" style={{ marginTop: 14 }}>{error}</div> : null}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <Button type="button" variant="secondary" onClick={loginWithGoogle}>Continue with Google <span aria-hidden="true">→</span></Button>
+            <small className="muted-note">Google sign-in remains available. Business data stays isolated per workspace; sign-in alone never grants Gmail access.</small>
+          </div>
           <div className="auth-switch">{signup ? 'Already have a workspace?' : 'New to Mandate?'} <button onClick={() => go(signup ? '/login' : '/signup')}>{signup ? 'Log in' : 'Create a workspace'}</button></div>
-          <small className="auth-legal">Mandate never sees your Google password. No demo credentials are accepted.</small>
+          <small className="auth-legal">Mandate never sees your Google password. Local passwords are hashed with scrypt and never returned by the API.</small>
         </section>
       </main>
     </div>
@@ -178,8 +261,8 @@ function ForgotPassword() {
       <header className="auth-top"><Logo /><button className="text-button" onClick={() => go('/login')}>← Back to login</button></header>
       <section className="simple-message">
         <span className="eyebrow">Account access</span>
-        <h2>There is no Mandate password to reset.</h2>
-        <p>Sign-in is handled by Google, so Mandate does not store or reset passwords. If you cannot access your Google account, recover it with Google first, then return here.</p>
+        <h2>Password recovery isn’t available yet.</h2>
+        <p>Use the password you chose when you signed up, or continue with Google. This prototype does not send password-reset emails.</p>
         <Button onClick={() => go('/login')}>Return to login</Button>
       </section>
     </div>
@@ -1447,7 +1530,7 @@ function AppShell({ page, profile, user, onSignOut, theme, onThemeChange, childr
   );
 }
 
-/* ================= App (server-validated Google session) ================= */
+/* ================= App (server-validated session) ================= */
 export default function App() {
   const [path, setPath] = useState(window.location.pathname);
   const [serverUser, setServerUser] = useState(null);

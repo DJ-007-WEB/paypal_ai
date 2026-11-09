@@ -70,6 +70,41 @@ function createUserService({ collection = null } = {}) {
     return clone(user);
   }
 
+  async function createLocalUser({ email, passwordHash, displayName }) {
+    const normalized = String(email || '').trim().toLowerCase();
+    if (!normalized) throw new Error('Email is required.');
+    if (!passwordHash || typeof passwordHash !== 'string') throw new Error('passwordHash is required.');
+    const existing = await findByEmail(normalized);
+    if (existing) {
+      const err = new Error('An account with this email already exists. Try signing in instead.');
+      err.statusCode = 409;
+      err.code = 'EMAIL_IN_USE';
+      throw err;
+    }
+    const now = new Date().toISOString();
+    const userId = `user_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+    const user = {
+      userId,
+      email: normalized,
+      emailVerified: false,
+      displayName: displayName || '',
+      authProvider: 'local',
+      passwordHash,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+      lastLoginAt: now,
+    };
+    // Local users deliberately have no googleSubject field: the Mongo unique
+    // index on googleSubject treats missing values as allowed for many docs.
+    if (collection) {
+      await collection.insertOne({ ...user });
+    } else {
+      memory.set(userId, { ...user });
+    }
+    return clone(user);
+  }
+
   async function updateLogin(user, { email, emailVerified, displayName }) {
     const now = new Date().toISOString();
     const updated = {
@@ -119,6 +154,10 @@ function createUserService({ collection = null } = {}) {
     try {
       await collection.createIndex({ userId: 1 }, { unique: true });
       await collection.createIndex({ googleSubject: 1 }, { unique: true });
+      await collection.createIndex(
+        { email: 1 },
+        { unique: true, partialFilterExpression: { passwordHash: { $exists: true } } }
+      );
     } catch { /* index creation best-effort; server.js owns canonical indexes */ }
   }
 
@@ -135,7 +174,7 @@ function createUserService({ collection = null } = {}) {
     return clone(entry);
   }
 
-  return { findById, findByGoogleSub, findByEmail, createFromOidc, updateLogin, findOrCreateFromOidc, disable, ensureIndexes, __seed };
+  return { findById, findByGoogleSub, findByEmail, createFromOidc, createLocalUser, updateLogin, findOrCreateFromOidc, disable, ensureIndexes, __seed };
 }
 
 module.exports = { createUserService };

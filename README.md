@@ -13,7 +13,7 @@ Mandate turns a business purchasing request into a transparent vendor recommenda
 - Independent checks for budget, compatibility, inventory, delivery, approved vendors, quality, and reliability
 - Express purchase evaluation/retrieval API with tenant isolation and audit events
 - React/Vite purchase desk, purchase history, approvals, workspace settings, and supplier catalog
-- Google OIDC sign-in with server-side sessions, CSRF protection, and durable OAuth transaction state
+- Google OIDC sign-in plus isolated email/password accounts with scrypt hashing, server-side sessions, CSRF protection, and durable OAuth transaction state
 - Workspace memberships with roles, invitations, acceptance, and server-side permissions
 - Human approval workflow with single-use atomic decisions
 - PayPal Orders API (Sandbox) order creation, redirect, verified capture, cancellation, and status
@@ -78,7 +78,7 @@ Open `http://localhost:5173`. The frontend always calls the relative base `/api`
 VITE_DEV_API_PROXY=http://localhost:3000
 ```
 
-For a non-proxied API base, set `VITE_API_BASE_URL` at build time. Google OAuth requires the same-origin `/api` proxy so the host-only `mandate.oauth_tx` cookie round-trips. Never place PayPal, Google, MongoDB, session, or encryption secrets in `VITE_*` variables — Vite embeds those in the browser bundle.
+The browser client always uses the same-origin `/api` base. This is required for the host-only OAuth/session cookies and CSRF tokens to round-trip; `VITE_API_BASE_URL` is not used. Never place PayPal, Google, MongoDB, session, or encryption secrets in `VITE_*` variables — Vite embeds those in the browser bundle.
 
 ## Deployment
 
@@ -152,8 +152,8 @@ TOKEN_ENCRYPTION_KEY=<base64 32-byte key or 64-char hex>
 - Build command: `npm run build`
 - Output directory: `dist`
 - `frontend/vercel.json` rewrites `/api/:path*` to `https://paypal-ai-m3dq.onrender.com/api/:path*` and serves the SPA fallback for all other paths.
-- Remove `VITE_API_BASE_URL` from the Vercel build environment (or set it to `/api`). An absolute Render URL makes Google sign-in start on `onrender.com`, so the host-only `mandate.oauth_tx` cookie is not sent to the Vercel callback.
-- Do not add backend secrets to Vercel. `VITE_*` values are public. `VITE_API_BASE_URL` is unnecessary when the rewrite/proxy is used.
+- The frontend hardcodes the same-origin `/api` base. If `VITE_API_BASE_URL` is still configured in Vercel, remove it; it is ignored by the current client and an old absolute value is a common source of cookie/CORS confusion.
+- Do not add backend secrets to Vercel. `VITE_*` values are public.
 
 ### Google Cloud OAuth
 
@@ -209,6 +209,8 @@ The webhook route is intentionally public (PayPal cannot send a session or CSRF 
 
 ```text
 GET  /api/health
+POST /api/auth/register          Email/password signup (isolated personal workspace)
+POST /api/auth/login             Email/password sign-in
 GET  /api/auth/google            Start Google OIDC
 GET  /api/auth/google/callback   OIDC callback
 GET  /api/auth/session           Current server session

@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { createOAuthTransactionStore } = require('../services/oauthTransaction.service');
 const { createCsrfMiddleware } = require('../middleware/csrf');
+const { hashPassword, verifyPassword, DUMMY_HASH } = require('../services/password.service');
 
 /**
  * Google OpenID Connect authentication routes (§4).
@@ -138,6 +139,112 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
     } catch { /* audit best-effort; never block auth */ }
   }
 
+  function publicUser(user) {
+    return {
+      userId: user.userId,
+      email: user.email,
+      emailVerified: Boolean(user.emailVerified),
+      displayName: user.displayName || '',
+    };
+  }
+
+  function normalizeEmail(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  function isValidEmail(value) {
+    return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  }
+
+  function cleanText(value, max = 120) {
+    return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+  }
+
+  function authError(message, statusCode, code) {
+    const err = new Error(message);
+    err.statusCode = statusCode;
+    err.code = code;
+    return err;
+  }
+
+  async function establishSession(res, user, statusCode = 200) {
+    const session = await sessionStore.create(user.userId);
+    res.set('Set-Cookie', sessionStore.buildCookieHeader(session.sessionId));
+    res.set('Cache-Control', 'no-store');
+    return res.status(statusCode).json({
+      success: true,
+      data: {
+        authenticated: true,
+        user: publicUser(user),
+        csrfToken: session.csrfToken,
+      },
+    });
+  }
+
+  // Local email/password sign-up. Creates an isolated personal workspace using
+  // only the new server-side user ID; client-supplied tenant IDs are ignored.
+  router.post('/auth/register', async (req, res, next) => {
+    try {
+      const email = normalizeEmail(req.body?.email);
+      const password = typeof req.body?.password === 'string' ? req.body.password : '';
+      if (!isValidEmail(email)) {
+        throw authError('Enter a valid email address.', 400, 'INVALID_EMAIL');
+      }
+      if (password.length < 12 || password.length > 128) {
+        throw authError('Use a password between 12 and 128 characters.', 400, 'INVALID_PASSWORD');
+      }
+      const displayName = cleanText(req.body?.displayName) || email.split('@')[0];
+      const passwordHash = await hashPassword(password);
+      let user;
+      try {
+        user = await userService.createLocalUser({ email, passwordHash, displayName });
+      } catch (err) {
+        if (err.code === 'EMAIL_IN_USE') {
+          return res.status(409).json({
+            success: false,
+            error: { code: err.code, message: err.message },
+          });
+        }
+        throw err;
+      }
+      await maybeCreateFirstWorkspace({
+        user,
+        tenantService,
+        businessName: cleanText(req.body?.businessName) || undefined,
+      });
+      await safeAudit('SIGN_UP_SUCCEEDED', { actorId: user.userId });
+      return await establishSession(res, user, 201);
+    } catch (err) { next(err); }
+  });
+
+  // Local email/password sign-in. Missing users still perform a scrypt check so
+  // timing does not reveal whether an email is registered. Workspace access is
+  // always resolved from the authenticated user, never from the request body.
+  router.post('/auth/login', async (req, res, next) => {
+    try {
+      const email = normalizeEmail(req.body?.email);
+      const password = typeof req.body?.password === 'string' ? req.body.password : '';
+      if (!email || password.length > 128) {
+        await verifyPassword(password, DUMMY_HASH);
+        throw authError('Email or password is incorrect.', 401, 'INVALID_CREDENTIALS');
+      }
+      const user = await userService.findByEmail(email);
+      const hasLocalPassword = Boolean(user && typeof user.passwordHash === 'string');
+      const valid = await verifyPassword(password, hasLocalPassword ? user.passwordHash : DUMMY_HASH);
+      if (!user || !hasLocalPassword || !valid) {
+        await safeAudit('SIGN_IN_FAILED', { reason: 'invalid_credentials' });
+        throw authError('Email or password is incorrect.', 401, 'INVALID_CREDENTIALS');
+      }
+      if (user.status !== 'active') {
+        throw authError('This account is disabled.', 403, 'USER_DISABLED');
+      }
+      const updated = await userService.updateLogin(user, {});
+      await maybeCreateFirstWorkspace({ user: updated, tenantService });
+      await safeAudit('SIGN_IN_SUCCEEDED', { actorId: updated.userId });
+      return await establishSession(res, updated);
+    } catch (err) { next(err); }
+  });
+
   // Start: GET /api/auth/google
   router.get('/auth/google', async (req, res, next) => {
     try {
@@ -270,13 +377,14 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
 
   // Auto-create workspace for new users on first Google sign-in.
   // Idempotent and deterministic; never duplicates tenants on callback retries.
-  async function maybeCreateFirstWorkspace({ user, tenantService: service } = {}) {
+  async function maybeCreateFirstWorkspace({ user, tenantService: service, businessName } = {}) {
     if (!service || !user || !user.userId) return null;
     const emailLocal = String(user.email || '').split('@')[0];
-    const businessName = user.displayName ? `${user.displayName}'s workspace` : `${emailLocal || 'My'} workspace`;
+    const workspaceName = businessName
+      || (user.displayName ? `${user.displayName}'s workspace` : `${emailLocal || 'My'} workspace`);
     return service.ensureWorkspaceForUser({
       userId: user.userId,
-      businessName,
+      businessName: workspaceName,
       businessEmail: user.emailVerified ? user.email : '',
     });
   }
