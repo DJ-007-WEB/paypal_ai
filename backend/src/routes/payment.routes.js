@@ -129,7 +129,7 @@ function createPaymentRoutes({ purchaseStore, auditService, paypalService } = {}
 
       let paypalOrder;
       try {
-        paypalOrder = await paypalService.createOrder({ amountMinor, currency, purchaseId, tenantId });
+        paypalOrder = await paypalService.createOrder({ amountMinor, currency, purchaseId, tenantId, requestId: req.requestId || null });
       } catch (err) {
         await purchaseStore.compareAndSetPayment({
           tenantId,
