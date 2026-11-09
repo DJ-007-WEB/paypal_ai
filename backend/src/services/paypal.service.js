@@ -15,7 +15,7 @@
  * - No credentials or provider payloads are logged.
  */
 
-const PAYPAL_SANDBOX_BASE = 'https://api.sandbox.paypal.com';
+const PAYPAL_SANDBOX_BASE = 'https://api-m.sandbox.paypal.com';
 const REQUEST_TIMEOUT_MS = 15000;
 const TOKEN_SAFETY_WINDOW_MS = 60 * 1000;
 
@@ -95,9 +95,13 @@ function createPayPalService({ config } = {}) {
 
     if (!response.ok) {
       const issue = parsed?.details?.[0]?.issue || parsed?.name || 'PAYPAL_REQUEST_FAILED';
+      const debugId = parsed?.debug_id || parsed?.debugId || null;
+      // Log only safe provider diagnostics; never log credentials, tokens, or full payloads.
+      console.error(`[PAYPAL] request failed requestId=${requestId || 'none'} method=${method} path=${path} status=${response.status} issue=${String(issue).slice(0, 100)} debugId=${debugId || 'none'}`);
       throw paypalError('PAYPAL_REQUEST_FAILED', 'PayPal rejected the request.', 502, {
         providerStatus: response.status,
         providerIssue: issue,
+        providerDebugId: debugId,
         requestId: requestId || null,
       });
     }
@@ -138,7 +142,7 @@ function createPayPalService({ config } = {}) {
     return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...extra };
   }
 
-  async function createOrder({ amountMinor, currency, purchaseId, tenantId } = {}) {
+  async function createOrder({ amountMinor, currency, purchaseId, tenantId, requestId } = {}) {
     requireEnabled();
     if (!purchaseId || !tenantId) throw paypalError('INVALID_ORDER', 'purchaseId and tenantId are required.', 400);
     const amount = toPayPalAmount(amountMinor, currency);
@@ -146,10 +150,11 @@ function createPayPalService({ config } = {}) {
       intent: 'CAPTURE',
       purchase_units: [
         {
+          // This is a single approved grand total (including shipping/tax/fees),
+          // not an itemized cart. Do not send an item_total breakdown without items.
           amount: {
             currency_code: amount.currency_code,
             value: amount.value,
-            breakdown: { item_total: { currency_code: amount.currency_code, value: amount.value } },
           },
           description: `Mandate purchase ${purchaseId}`.slice(0, 127),
           custom_id: String(purchaseId).slice(0, 127),
@@ -167,6 +172,7 @@ function createPayPalService({ config } = {}) {
       method: 'POST',
       headers: await authHeaders({ 'PayPal-Request-Id': `create-${invoiceIdFor(tenantId, purchaseId)}`.slice(0, 100) }),
       body: order,
+      requestId,
     });
     if (!data.id) throw paypalError('PAYPAL_ORDER_INVALID', 'PayPal did not return an order ID.', 502);
     return data;
