@@ -207,6 +207,10 @@ export async function getMyWorkspaces() {
   return apiFetch('/workspaces/me');
 }
 
+export async function ensureMyWorkspace() {
+  return apiFetch('/workspaces/ensure', { method: 'POST', body: {} });
+}
+
 export async function getCurrentWorkspace() {
   return apiFetch('/workspaces/current');
 }
