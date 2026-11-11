@@ -47,6 +47,37 @@ function createWorkspaceRoutes({ tenantService, userService, auditService } = {}
     } catch (err) { next(err); }
   });
 
+  // Idempotently provision the signed-in user's personal workspace.
+  // This also repairs older accounts that predate automatic workspace bootstrap.
+  router.post('/workspaces/ensure', async (req, res, next) => {
+    try {
+      const user = req.user || {};
+      const emailLocal = String(user.email || '').split('@')[0];
+      const businessName = user.displayName
+        ? `${user.displayName}'s workspace`
+        : `${emailLocal || 'My'} workspace`;
+      const result = await tenantService.ensureWorkspaceForUser({
+        userId: user.userId,
+        businessName,
+        businessEmail: user.emailVerified ? user.email : '',
+      });
+      if (result?.created) {
+        try {
+          await auditService.recordEvent({
+            tenantId: result.tenant?.tenantId || null,
+            eventType: 'WORKSPACE_CREATED',
+            actorId: user.userId,
+            metadata: { source: 'automatic_account_bootstrap' },
+          });
+        } catch { /* audit is best-effort */ }
+      }
+      return res.json({
+        success: true,
+        data: { tenant: result.tenant, membership: result.membership, created: Boolean(result.created) },
+      });
+    } catch (err) { next(err); }
+  });
+
   // Current workspace (requires resolved tenant context)
   router.get('/workspaces/current', async (req, res, next) => {
     try {
