@@ -53,6 +53,7 @@ function createUserService({ collection = null } = {}) {
     const user = {
       userId,
       googleSubject,
+      authProvider: 'google',
       email: email || '',
       emailVerified: Boolean(emailVerified),
       displayName: displayName || '',
