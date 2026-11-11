@@ -111,6 +111,10 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
       errorCode: err && (typeof err.code === 'string' || typeof err.code === 'number') ? err.code : null,
       errorName: err && typeof err.name === 'string' ? err.name : null,
       statusCode: err && Number.isInteger(err.statusCode) ? err.statusCode : null,
+      // Preserve only safe, allowlisted metadata from the underlying OIDC failure.
+      oidcStage: err && typeof err.oidcStage === 'string' ? err.oidcStage : null,
+      providerCode: err && (typeof err.providerCode === 'string' || typeof err.providerCode === 'number') ? err.providerCode : null,
+      providerErrorName: err && typeof err.providerErrorName === 'string' ? err.providerErrorName : null,
       providerError: err && typeof err.error === 'string' ? err.error.slice(0, 100) : null,
       providerStatus: err && Number.isInteger(err.response?.status) ? err.response.status : null,
       causeCode: err && typeof err.cause?.code === 'string' ? err.cause.code : null,
@@ -376,8 +380,13 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
       failureReason = 'redirect_failed';
       return res.redirect(302, frontendRedirect(config, '/app/dashboard?auth=success'));
     } catch (err) {
-      // Never expose provider payloads, codes, or tokens.
+      // Preserve the original library error metadata for server logs before
+      // mapping it to a generic public error. Never expose provider payloads,
+      // authorization codes, tokens, secrets, or raw error messages.
       if (!err.statusCode) {
+        err.oidcStage = err.oidcStage || failureReason;
+        err.providerCode = typeof err.code === 'string' || typeof err.code === 'number' ? err.code : null;
+        err.providerErrorName = typeof err.name === 'string' ? err.name : null;
         err.statusCode = 502;
         err.code = 'OIDC_PROVIDER_ERROR';
         err.message = 'Sign-in failed due to a provider error. Please try again.';
@@ -496,42 +505,58 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
 // Never hand-roll JWT verification.
 let cachedProvider = null;
 async function exchangeWithGoogle({ config, code, codeVerifier, nonce, state }) {
-  const key = `${config.GOOGLE_OIDC_ISSUER}|${config.GOOGLE_OIDC_CLIENT_ID}`;
-  if (!cachedProvider || cachedProvider.key !== key) {
-    const { discovery, ClientSecretPost } = await import('openid-client');
-    const secret = config.getSecrets ? config.getSecrets().GOOGLE_OIDC_CLIENT_SECRET : '';
-    const value = await discovery(
-      new URL(config.GOOGLE_OIDC_ISSUER),
-      config.GOOGLE_OIDC_CLIENT_ID,
-      { client_secret: secret, redirect_uris: [config.GOOGLE_OIDC_REDIRECT_URI], response_types: ['code'] },
-      ClientSecretPost(secret)
-    );
-    cachedProvider = { key, value };
+  let stage = 'provider_discovery';
+  try {
+    const key = `${config.GOOGLE_OIDC_ISSUER}|${config.GOOGLE_OIDC_CLIENT_ID}`;
+    if (!cachedProvider || cachedProvider.key !== key) {
+      const { discovery, ClientSecretPost } = await import('openid-client');
+      const secret = config.getSecrets ? config.getSecrets().GOOGLE_OIDC_CLIENT_SECRET : '';
+      const value = await discovery(
+        new URL(config.GOOGLE_OIDC_ISSUER),
+        config.GOOGLE_OIDC_CLIENT_ID,
+        { client_secret: secret, redirect_uris: [config.GOOGLE_OIDC_REDIRECT_URI], response_types: ['code'] },
+        ClientSecretPost(secret)
+      );
+      cachedProvider = { key, value };
+    }
+
+    stage = 'authorization_code_exchange';
+    const { authorizationCodeGrant } = await import('openid-client');
+    const currentUrl = new URL(config.GOOGLE_OIDC_REDIRECT_URI);
+    currentUrl.searchParams.set('code', code);
+    currentUrl.searchParams.set('state', state);
+    const tokenSet = await authorizationCodeGrant(cachedProvider.value, currentUrl, {
+      expectedState: state,
+      expectedNonce: nonce,
+      pkceCodeVerifier: codeVerifier,
+      idTokenExpected: true,
+    });
+
+    stage = 'id_token_claims';
+    const claims = tokenSet.claims();
+    if (!claims) throw new Error('Missing ID token claims.');
+    // Library validates signature/issuer/audience/expiry/nonce; keep defensive checks.
+    if (claims.iss !== config.GOOGLE_OIDC_ISSUER && claims.iss !== 'https://accounts.google.com') {
+      throw new Error('Invalid issuer.');
+    }
+    if (claims.aud !== config.GOOGLE_OIDC_CLIENT_ID) throw new Error('Invalid audience.');
+    if (claims.nonce !== nonce) throw new Error('Invalid nonce.');
+    return {
+      sub: claims.sub,
+      email: claims.email,
+      email_verified: claims.email_verified === true,
+      name: claims.name,
+    };
+  } catch (err) {
+    // Attach only stage and safe error metadata; callback logger never emits raw
+    // messages, response bodies, credentials, codes, or tokens.
+    if (err && typeof err === 'object') {
+      err.oidcStage = stage;
+      err.providerCode = typeof err.code === 'string' || typeof err.code === 'number' ? err.code : null;
+      err.providerErrorName = typeof err.name === 'string' ? err.name : null;
+    }
+    throw err;
   }
-  const { authorizationCodeGrant } = await import('openid-client');
-  const currentUrl = new URL(config.GOOGLE_OIDC_REDIRECT_URI);
-  currentUrl.searchParams.set('code', code);
-  currentUrl.searchParams.set('state', state);
-  const tokenSet = await authorizationCodeGrant(cachedProvider.value, currentUrl, {
-    expectedState: state,
-    expectedNonce: nonce,
-    pkceCodeVerifier: codeVerifier,
-    idTokenExpected: true,
-  });
-  const claims = tokenSet.claims();
-  if (!claims) throw new Error('Missing ID token claims.');
-  // Library validates signature/issuer/audience/expiry/nonce; keep defensive checks.
-  if (claims.iss !== config.GOOGLE_OIDC_ISSUER && claims.iss !== 'https://accounts.google.com') {
-    throw new Error('Invalid issuer.');
-  }
-  if (claims.aud !== config.GOOGLE_OIDC_CLIENT_ID) throw new Error('Invalid audience.');
-  if (claims.nonce !== nonce) throw new Error('Invalid nonce.');
-  return {
-    sub: claims.sub,
-    email: claims.email,
-    email_verified: claims.email_verified === true,
-    name: claims.name,
-  };
 }
 
 module.exports = { createAuthRoutes, createTransactionStore, frontendRedirect };
