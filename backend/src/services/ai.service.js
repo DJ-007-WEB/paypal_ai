@@ -257,7 +257,7 @@ function createAiService({ config = {}, fetchImpl = globalThis.fetch } = {}) {
     timer.unref?.();
     // Gemini 3.6+ ignores/rejects legacy sampling controls. Use low reasoning
     // effort for short extraction tasks and omit temperature entirely.
-    const isGemini36OrLater = /generativelanguage\\.googleapis\\.com/i.test(baseUrl) && /^gemini-(?:3\\.(?:6|7|8)|[4-9]\\.)/i.test(model);
+    const isGemini36OrLater = /generativelanguage\.googleapis\.com/i.test(baseUrl) && /^gemini-(?:3\.(?:6|7|8)|[4-9]\.)/i.test(model);
     const requestBody = {
       model,
       messages,
