@@ -118,6 +118,10 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
       providerError: err && typeof err.error === 'string' ? err.error.slice(0, 100) : null,
       providerStatus: err && Number.isInteger(err.response?.status) ? err.response.status : null,
       causeCode: err && typeof err.cause?.code === 'string' ? err.cause.code : null,
+      causeName: err && typeof err.cause?.name === 'string' ? err.cause.name : null,
+      oauthResponseStatus: err && Number.isInteger(err.cause?.response?.status) ? err.cause.response.status : null,
+      oauthResponseContentType: err && typeof err.cause?.response?.headers?.get === 'function'
+        ? String(err.cause.response.headers.get('content-type') || '').slice(0, 80) : null,
     };
     console.error(`[AUTH] ${JSON.stringify(entry)}`);
   }
