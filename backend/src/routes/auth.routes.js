@@ -360,7 +360,7 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
       failureReason = 'token_exchange_failed';
       let claims;
       if (oidcExchange) {
-        claims = await oidcExchange({ code, codeVerifier: tx.codeVerifier, nonce: tx.nonce, state });
+        claims = await oidcExchange({ code, codeVerifier: tx.codeVerifier, nonce: tx.nonce, state, authorizationResponseIssuer });
       } else {
         claims = await exchangeWithGoogle({ config, code, codeVerifier: tx.codeVerifier, nonce: tx.nonce, state, authorizationResponseIssuer });
       }
