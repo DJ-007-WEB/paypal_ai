@@ -1649,13 +1649,17 @@ export default function App() {
             createdAt: session.user.createdAt || null,
             lastLoginAt: session.user.lastLoginAt || null,
           });
-          let mine = await getMyWorkspaces();
-          let list = Array.isArray(mine?.memberships) ? mine.memberships : [];
+          // The session endpoint now includes the user's workspaces, avoiding
+          // an extra round-trip on every refresh. Fallback supports older API deployments.
+          let list = Array.isArray(session.workspaces) ? session.workspaces : [];
+          if (!list.length) {
+            const mine = await getMyWorkspaces();
+            list = Array.isArray(mine?.memberships) ? mine.memberships : [];
+          }
           if (!alive) return;
           if (!list.length) {
-            // Repair older accounts and make first-session provisioning reliable.
             await ensureMyWorkspace();
-            mine = await getMyWorkspaces();
+            const mine = await getMyWorkspaces();
             list = Array.isArray(mine?.memberships) ? mine.memberships : [];
           }
           if (!alive) return;
