@@ -153,12 +153,12 @@ function createUserService({ collection = null } = {}) {
     if (!collection) return;
     try {
       await collection.createIndex({ userId: 1 }, { unique: true });
-      await collection.createIndex({ googleSubject: 1 }, { unique: true });
+      await collection.createIndex({ googleSubject: 1 }, { unique: true, partialFilterExpression: { googleSubject: { $type: 'string' } } });
       await collection.createIndex(
         { email: 1 },
         { unique: true, partialFilterExpression: { passwordHash: { $exists: true } } }
       );
-    } catch { /* index creation best-effort; server.js owns canonical indexes */ }
+    } catch (err) { console.warn('[DB] User index creation skipped:', err.message); }
   }
 
   // Test harness seeding
