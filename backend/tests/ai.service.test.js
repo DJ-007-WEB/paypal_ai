@@ -81,7 +81,7 @@ test('AI provider failures retain safe HTTP diagnostics for server logs', async 
     fetchImpl: async () => ({
       ok: false,
       status: 400,
-      async clone() {
+      clone() {
         return {
           async json() {
             return { error: { code: 400, status: 'INVALID_ARGUMENT' } };
