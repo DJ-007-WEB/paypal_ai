@@ -113,10 +113,11 @@ async function rawRequest(path, { method = 'GET', body, headers = {} } = {}) {
   });
 
   let response;
-  // AI provider calls have a documented 20-second backend timeout; allow a
-  // small transport margin while keeping ordinary API calls tightly bounded.
+  // AI calls may use up to 90s at the provider. Keep a 15s margin over
+  // the backend's AI_TIMEOUT_MS + 10s request deadline. Ordinary API calls
+  // remain tightly bounded by API_TIMEOUT_MS.
   const timeoutMs = path === '/purchases/interpret' || /\/purchases\/[^/]+\/explain$/.test(path)
-    ? 55000
+    ? 105000
     : API_TIMEOUT_MS;
   try {
     const result = await withApiTimeout(async (signal) => {
