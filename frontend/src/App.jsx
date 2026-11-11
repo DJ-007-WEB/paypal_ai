@@ -1514,6 +1514,12 @@ function AppShell({ page, profile, workspaceName, user, onSignOut, signOutBusy, 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [mobileOpen]);
+  useEffect(() => {
+    if (!accountOpen) return;
+    const onKey = (event) => { if (event.key === 'Escape') setAccountOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [accountOpen]);
   return (
     <div className="app-shell">
       <aside className={mobileOpen ? 'app-sidebar mobile-open' : 'app-sidebar'} aria-label="Primary navigation">
