@@ -9,11 +9,12 @@ let csrfRequest = null;
 // Bound every browser-to-API request. A sleeping Render instance or stalled
 // upstream must produce a visible retryable error instead of an endless spinner.
 const API_TIMEOUT_MS = 10000;
-async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
+async function withApiTimeout(operation, timeoutMs = API_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    // Keep the timer active until the response body has also been consumed.
+    return await operation(controller.signal);
   } catch (error) {
     if (error?.name === 'AbortError') {
       const timeout = new Error(`The API did not respond within ${Math.round(timeoutMs / 1000)} seconds. The service may be waking up; please retry.`);
@@ -78,8 +79,10 @@ function requestError(body, fallback, status) {
 async function refreshCsrfToken() {
   if (csrfRequest) return csrfRequest;
   csrfRequest = (async () => {
-    const response = await fetchWithTimeout(`${API_BASE_URL}/auth/csrf`, { credentials: 'include' });
-    const body = await parseBody(response);
+    const { response, body } = await withApiTimeout(async (signal) => {
+      const response = await fetch(`${API_BASE_URL}/auth/csrf`, { credentials: 'include', signal });
+      return { response, body: await parseBody(response) };
+    });
     if (!response.ok || !body?.data?.csrfToken) {
       throw requestError(body, 'Could not obtain a CSRF token', response.status);
     }
@@ -106,18 +109,21 @@ async function rawRequest(path, { method = 'GET', body, headers = {} } = {}) {
 
   let response;
   try {
-    response = await fetchWithTimeout(`${API_BASE_URL}${path}`, {
-      method: methodUpper,
-      credentials: 'include',
-      headers: requestHeaders,
-      body: payload,
+    const result = await withApiTimeout(async (signal) => {
+      const response = await fetch(`${API_BASE_URL}${path}`, {
+        method: methodUpper,
+        credentials: 'include',
+        headers: requestHeaders,
+        body: payload,
+        signal,
+      });
+      return { response, parsed: await parseBody(response) };
     });
+    return result;
   } catch (error) {
     if (error?.code === 'API_TIMEOUT') throw error;
     throw new Error(`Could not reach the Mandate API at ${API_BASE_URL}. Check that the backend is running.`);
   }
-  const parsed = await parseBody(response);
-  return { response, parsed };
 }
 
 async function apiFetch(path, { method = 'GET', body, headers = {} } = {}) {
@@ -315,9 +321,13 @@ export async function listAuditEvents() {
 }
 
 export async function getHealth() {
-  const response = await fetchWithTimeout(`${API_BASE_URL}/health`, {}, 8000);
-  if (!response.ok) throw new Error('API health check failed');
-  return response.json();
+  const result = await withApiTimeout(async (signal) => {
+    const response = await fetch(`${API_BASE_URL}/health`, { signal });
+    const body = await parseBody(response);
+    return { response, body };
+  }, 8000);
+  if (!result.response.ok) throw new Error('API health check failed');
+  return result.body;
 }
 
 /* ---------- Vendors ---------- */
