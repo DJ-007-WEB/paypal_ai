@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { evaluatePurchase, explainPurchase, getAiStatus, getBusinessEmailStatus, getCurrentWorkspace, getGmailStatus, getHealth, getMyWorkspaces, getPurchaseById, getSession, getVendors, interpretPurchaseRequest, listAuditEvents, listPurchases, listWorkspaceMembers, loginWithGoogle, loginWithPassword, logout as apiLogout, registerWithPassword, setSelectedTenantId, updateWorkspace } from './api/client.js';
+import { evaluatePurchase, explainPurchase, getAiStatus, getBusinessEmailStatus, getCurrentWorkspace, getGmailStatus, getHealth, getMyWorkspaces, ensureMyWorkspace, getPurchaseById, getSession, getVendors, interpretPurchaseRequest, listAuditEvents, listPurchases, listWorkspaceMembers, loginWithGoogle, loginWithPassword, logout as apiLogout, registerWithPassword, setSelectedTenantId, updateWorkspace } from './api/client.js';
 import { Button, EmptyState, InlineAlert, LoadingState, Logo, PageHeader, StatusBadge, ThemeControl, formatMoney, go } from './components/ui.jsx';
 import { SUPPORTED_CURRENCIES, majorToMinor, minorToMajor } from './currency.js';
 import VendorImportWizard from './components/VendorImportWizard.jsx';
@@ -1071,13 +1071,14 @@ function HistoryPage() {
 
   async function aiExplainRecord(e) {
     e?.preventDefault();
+    const purchaseId = selected?.purchaseId || id.trim();
     setAiExplainId(null); setAiExplainResult({ busy: false, text: '', error: '' });
-    if (!id.trim()) { setAiExplainResult({ busy: false, error: 'No purchase ID.' }); return; }
+    if (!purchaseId) { setAiExplainResult({ busy: false, error: 'Select a purchase record or enter a purchase ID first.' }); return; }
     setAiExplainResult({ busy: true, text: '', error: '' });
     try {
-      const data = await explainPurchase(id);
+      const data = await explainPurchase(purchaseId);
       setAiExplainResult({ busy: false, text: data?.explanation || '', error: data?.explanation ? '' : 'The AI service returned no explanation.' });
-      setAiExplainId(id);
+      setAiExplainId(purchaseId);
     } catch (err) {
       setAiExplainResult({ busy: false, error: err.message || 'AI explanation is unavailable.' });
       setAiExplainId(null);
@@ -1145,15 +1146,13 @@ function HistoryPage() {
             <p style={{ whiteSpace: 'pre-line' }}>{aiExplainResult.text}</p>
             {aiExplainResult.error ? <p className="muted-note" role="status">{aiExplainResult.error}</p> : null}
             <div style={{ marginTop: 8, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-              <Button type="button" variant="secondary" onClick={() => aiExplainRecord(e)} disabled={aiExplainResult.busy}>
+              <Button type="button" variant="secondary" onClick={() => aiExplainRecord()} disabled={aiExplainResult.busy}>
                 {aiExplainResult.busy ? 'Generating…' : aiExplainResult.error ? 'Explain failed' : 'Explain with AI'}
               </Button>
               <span className="muted-note">
                 {aiExplainResult.error
                   ? 'AI cannot override constraints or approvals.'
-                  : aiStatus?.enabled
-                    ? 'AI advisory only; engine and policy remain authoritative.'
-                    : 'Explanation available only after evaluating a purchase.'}
+                   : 'AI is advisory only; the stored decision and policy result remain authoritative.'}
               </span>
             </div>
           </div>
@@ -1619,7 +1618,7 @@ export default function App() {
 
   useEffect(() => {
     getHealth().then(() => setApiOnline(true)).catch(() => setApiOnline(false));
-  }, [path]);
+  }, []);
 
   // Validate once on application mount, not on every client-side navigation.
   // A route transition must not reset the authenticated session or trigger
@@ -1650,11 +1649,18 @@ export default function App() {
             createdAt: session.user.createdAt || null,
             lastLoginAt: session.user.lastLoginAt || null,
           });
-          const mine = await getMyWorkspaces();
-          const list = Array.isArray(mine?.memberships) ? mine.memberships : [];
+          let mine = await getMyWorkspaces();
+          let list = Array.isArray(mine?.memberships) ? mine.memberships : [];
           if (!alive) return;
           if (!list.length) {
-            throw new Error('Your account is signed in, but no workspace is linked to it. Please sign in again or contact support.');
+            // Repair older accounts and make first-session provisioning reliable.
+            await ensureMyWorkspace();
+            mine = await getMyWorkspaces();
+            list = Array.isArray(mine?.memberships) ? mine.memberships : [];
+          }
+          if (!alive) return;
+          if (!list.length) {
+            throw new Error('Your account is signed in, but the server could not create a workspace. Please retry.');
           }
           const storedSelection = (() => { try { return localStorage.getItem('mandate.selected.tenant.v1') || ''; } catch { return ''; } })();
           const selected = list.find((item) => item.tenantId === storedSelection) || list[0];
