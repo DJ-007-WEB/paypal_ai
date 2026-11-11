@@ -260,7 +260,7 @@ function loadConfig(env = process.env) {
     name: 'AI_BASE_URL', required: false, isProd,
   });
   const AI_MODEL = env.AI_MODEL ? String(env.AI_MODEL).trim() : '';
-  const AI_TIMEOUT_MS = parseIntBounded(env.AI_TIMEOUT_MS, { fallback: 20000, min: 1000, max: 30000, name: 'AI_TIMEOUT_MS' });
+  const AI_TIMEOUT_MS = parseIntBounded(env.AI_TIMEOUT_MS, { fallback: 45000, min: 1000, max: 90000, name: 'AI_TIMEOUT_MS' });
   const AI_MAX_INPUT_CHARS = parseIntBounded(env.AI_MAX_INPUT_CHARS, { fallback: 4000, min: 100, max: 10000, name: 'AI_MAX_INPUT_CHARS' });
   if (AI_ENABLED) {
     if (!AI_API_KEY) throw new Error('AI_API_KEY is required when AI_ENABLED=true.');
