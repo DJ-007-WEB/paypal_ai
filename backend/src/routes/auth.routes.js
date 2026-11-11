@@ -172,6 +172,9 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
       email: user.email,
       emailVerified: Boolean(user.emailVerified),
       displayName: user.displayName || '',
+      authProvider: user.authProvider || (user.googleSubject ? 'google' : 'local'),
+      createdAt: user.createdAt || null,
+      lastLoginAt: user.lastLoginAt || null,
     };
   }
 
@@ -457,7 +460,15 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
         success: true,
         data: {
           authenticated: true,
-          user: { userId: user.userId, email: user.email, emailVerified: user.emailVerified, displayName: user.displayName },
+          user: {
+            userId: user.userId,
+            email: user.email,
+            emailVerified: Boolean(user.emailVerified),
+            displayName: user.displayName || '',
+            authProvider: user.authProvider || (user.googleSubject ? 'google' : 'local'),
+            createdAt: user.createdAt || null,
+            lastLoginAt: user.lastLoginAt || null,
+          },
           csrfToken: session.csrfToken,
         },
       });
