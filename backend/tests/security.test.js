@@ -757,7 +757,7 @@ test('Google login succeeds with the transaction cookie and preserves state, non
     const txCookiePair = txCookie.split(';')[0];
 
     const callback = await fetch(
-      `${baseUrl}/api/auth/google/callback?code=test-code&state=${encodeURIComponent(state)}`,
+      `${baseUrl}/api/auth/google/callback?code=test-code&state=${encodeURIComponent(state)}&iss=${encodeURIComponent('https://accounts.google.com')}`,
       { redirect: 'manual', headers: { Cookie: txCookiePair } }
     );
     assert.equal(callback.status, 302);
@@ -771,6 +771,7 @@ test('Google login succeeds with the transaction cookie and preserves state, non
     assert.equal(exchangeCalls.length, 1);
     assert.equal(exchangeCalls[0].code, 'test-code');
     assert.equal(exchangeCalls[0].state, state);
+    assert.equal(exchangeCalls[0].authorizationResponseIssuer, 'https://accounts.google.com');
     assert.equal(exchangeCalls[0].nonce, nonce);
     assert.ok(exchangeCalls[0].codeVerifier);
     assert.equal(
