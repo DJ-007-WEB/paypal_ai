@@ -277,6 +277,9 @@ test('email/password signup and login create isolated personal workspaces', asyn
     assert.equal(signupA.status, 201);
     assert.equal(signupA.body.data.user.email, 'alice@example.com');
     assert.equal(signupA.body.data.authenticated, true);
+    assert.equal(signupA.body.data.user.authProvider, 'local');
+    assert.equal(signupA.body.data.user.emailVerified, false);
+    assert.ok(signupA.body.data.user.lastLoginAt);
     assert.ok(!Object.prototype.hasOwnProperty.call(signupA.body.data.user, 'passwordHash'));
     assert.ok(!Object.prototype.hasOwnProperty.call(signupA.body.data.user, 'googleSubject'));
     const cookieA = sessionCookie(signupA);
@@ -786,6 +789,12 @@ test('Google login succeeds with the transaction cookie and preserves state, non
     const sessionBody = await sessionRes.json();
     assert.equal(sessionBody.data.authenticated, true);
     assert.equal(sessionBody.data.user.email, 'user@example.com');
+    assert.equal(sessionBody.data.user.authProvider, 'google');
+    assert.equal(sessionBody.data.user.emailVerified, true);
+    assert.ok(sessionBody.data.user.lastLoginAt);
+    assert.ok(sessionBody.data.user.createdAt);
+    assert.equal(Object.hasOwn(sessionBody.data.user, 'googleSubject'), false);
+    assert.equal(Object.hasOwn(sessionBody.data.user, 'passwordHash'), false);
   } finally { await closeServer(server); }
 });
 
