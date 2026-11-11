@@ -6,6 +6,26 @@ const TENANT_KEY = 'mandate.selected.tenant.v1';
 let cachedCsrfToken = null;
 let csrfRequest = null;
 
+// Bound every browser-to-API request. A sleeping Render instance or stalled
+// upstream must produce a visible retryable error instead of an endless spinner.
+const API_TIMEOUT_MS = 10000;
+async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const timeout = new Error(`The API did not respond within ${Math.round(timeoutMs / 1000)} seconds. The service may be waking up; please retry.`);
+      timeout.code = 'API_TIMEOUT';
+      throw timeout;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function getSelectedTenantId() {
   try { return localStorage.getItem(TENANT_KEY) || ''; } catch { return ''; }
 }
@@ -30,7 +50,8 @@ function authHeaders(extra = {}) {
 async function parseBody(response) {
   try {
     return await response.json();
-  } catch {
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error;
     return {};
   }
 }
@@ -57,7 +78,7 @@ function requestError(body, fallback, status) {
 async function refreshCsrfToken() {
   if (csrfRequest) return csrfRequest;
   csrfRequest = (async () => {
-    const response = await fetch(`${API_BASE_URL}/auth/csrf`, { credentials: 'include' });
+    const response = await fetchWithTimeout(`${API_BASE_URL}/auth/csrf`, { credentials: 'include' });
     const body = await parseBody(response);
     if (!response.ok || !body?.data?.csrfToken) {
       throw requestError(body, 'Could not obtain a CSRF token', response.status);
@@ -85,13 +106,14 @@ async function rawRequest(path, { method = 'GET', body, headers = {} } = {}) {
 
   let response;
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
+    response = await fetchWithTimeout(`${API_BASE_URL}${path}`, {
       method: methodUpper,
       credentials: 'include',
       headers: requestHeaders,
       body: payload,
     });
-  } catch {
+  } catch (error) {
+    if (error?.code === 'API_TIMEOUT') throw error;
     throw new Error(`Could not reach the Mandate API at ${API_BASE_URL}. Check that the backend is running.`);
   }
   const parsed = await parseBody(response);
@@ -293,7 +315,7 @@ export async function listAuditEvents() {
 }
 
 export async function getHealth() {
-  const response = await fetch(`${API_BASE_URL}/health`);
+  const response = await fetchWithTimeout(`${API_BASE_URL}/health`, {}, 8000);
   if (!response.ok) throw new Error('API health check failed');
   return response.json();
 }
