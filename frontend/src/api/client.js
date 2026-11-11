@@ -73,7 +73,12 @@ function requestError(body, fallback, status) {
       ? body.details.map((item) => item?.message || item?.field).filter(Boolean).join(' ')
       : '';
   const base = body?.error?.message || body?.message || `${fallback} (HTTP ${status}).`;
-  return new Error([base, details].filter(Boolean).join(' '));
+  const requestId = body?.error?.requestId || body?.meta?.requestId || '';
+  const error = new Error([base, details, requestId ? `Reference: ${requestId}` : ''].filter(Boolean).join(' '));
+  error.code = body?.error?.code || null;
+  error.requestId = requestId || null;
+  error.status = status;
+  return error;
 }
 
 async function refreshCsrfToken() {
