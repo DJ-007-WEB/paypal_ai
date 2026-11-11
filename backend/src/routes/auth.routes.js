@@ -321,7 +321,7 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
           error: { code: 'OIDC_NOT_CONFIGURED', message: 'Google sign-in is not configured.' },
         });
       }
-      const { code, state, error: providerError } = req.query || {};
+      const { code, state, error: providerError, iss: authorizationResponseIssuer } = req.query || {};
       const transactionId = parseTransactionCookie(req);
       // Clear transaction cookie immediately (single-use). Use append so the
       // session cookie set later on success does not replace this header.
@@ -362,7 +362,7 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
       if (oidcExchange) {
         claims = await oidcExchange({ code, codeVerifier: tx.codeVerifier, nonce: tx.nonce, state });
       } else {
-        claims = await exchangeWithGoogle({ config, code, codeVerifier: tx.codeVerifier, nonce: tx.nonce, state });
+        claims = await exchangeWithGoogle({ config, code, codeVerifier: tx.codeVerifier, nonce: tx.nonce, state, authorizationResponseIssuer });
       }
 
       failureReason = 'invalid_claims';
@@ -524,7 +524,7 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
 // Use openid-client v6 for discovery + code exchange + ID-token validation.
 // Never hand-roll JWT verification.
 let cachedProvider = null;
-async function exchangeWithGoogle({ config, code, codeVerifier, nonce, state }) {
+async function exchangeWithGoogle({ config, code, codeVerifier, nonce, state, authorizationResponseIssuer }) {
   let stage = 'provider_discovery';
   try {
     const key = `${config.GOOGLE_OIDC_ISSUER}|${config.GOOGLE_OIDC_CLIENT_ID}`;
@@ -545,6 +545,12 @@ async function exchangeWithGoogle({ config, code, codeVerifier, nonce, state }) 
     const currentUrl = new URL(config.GOOGLE_OIDC_REDIRECT_URI);
     currentUrl.searchParams.set('code', code);
     currentUrl.searchParams.set('state', state);
+    // Google advertises RFC 9207 authorization-response issuer identification.
+    // Preserve `iss` from the real callback URL: authorizationCodeGrant validates
+    // it against discovery metadata before accepting the code response.
+    if (typeof authorizationResponseIssuer === 'string' && authorizationResponseIssuer) {
+      currentUrl.searchParams.set('iss', authorizationResponseIssuer);
+    }
     const tokenSet = await authorizationCodeGrant(cachedProvider.value, currentUrl, {
       expectedState: state,
       expectedNonce: nonce,
