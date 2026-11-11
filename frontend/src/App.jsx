@@ -861,7 +861,7 @@ function WorkspaceSecurityStatus() {
 }
 
 /* ================= Dashboard ================= */
-function Dashboard({ profile, user, onStartPurchase, permissions, onSignOut, signOutBusy, signOutError }) {
+function Dashboard({ profile, onStartPurchase, permissions }) {
   const canImport = !permissions || permissions.includes('vendors:import');
   const [catalog, setCatalog] = useState(null);
   const [catalogError, setCatalogError] = useState('');
@@ -897,32 +897,6 @@ function Dashboard({ profile, user, onStartPurchase, permissions, onSignOut, sig
         </section>
         <section className="surface"><span className="step-kicker">Purchasing policies</span><h3>Defaults at a glance</h3><div className="compact-facts"><span>Default delivery<b>{profile?.deadline || '5'} days</b></span><span>Minimum quality<b>{profile?.quality || '70'}/100</b></span><span>Approved vendors<b>{profile?.approvedOnly ? 'Required' : 'Optional'}</b></span></div><small>Workspace preferences — request constraints are evaluated per purchase, not stored as server policy.</small><div style={{ marginTop: 10 }}><button className="inline-link" onClick={() => go('/app/policies')}>Review policy defaults →</button></div></section>
       </div>
-      <section className="surface account-panel" aria-labelledby="account-heading">
-        <div className="account-panel-heading">
-          <div>
-            <span className="step-kicker">Your account</span>
-            <h3 id="account-heading">Sign-in details</h3>
-            <p className="muted-note">Identity details are verified by the Mandate API session, not read from browser profile data.</p>
-          </div>
-          <StatusBadge tone="ok">Session active</StatusBadge>
-        </div>
-        <div className="account-details">
-          <div className="account-identity">
-            <span className="account-avatar" aria-hidden="true">{(user?.fullName || user?.email || 'U').split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()}</span>
-            <div><b>{user?.fullName || 'Mandate user'}</b><small>{user?.email || 'Email unavailable'}</small></div>
-          </div>
-          <dl className="account-facts">
-            <div><dt>Sign-in method</dt><dd>{user?.authProvider === 'google' ? 'Google' : 'Email and password'}</dd></div>
-            <div><dt>Email status</dt><dd><StatusBadge tone={user?.emailVerified ? 'ok' : 'warn'}>{user?.emailVerified ? 'Verified' : 'Not verified'}</StatusBadge></dd></div>
-            <div><dt>Last sign-in</dt><dd>{user?.lastLoginAt && !Number.isNaN(Date.parse(user.lastLoginAt)) ? new Date(user.lastLoginAt).toLocaleString() : 'Not available'}</dd></div>
-          </dl>
-        </div>
-        {signOutError ? <InlineAlert tone="error" title="Could not sign out">{signOutError}</InlineAlert> : null}
-        <div className="account-actions">
-          <span className="muted-note">You can safely end this session from here or the navigation panel.</span>
-          <Button type="button" variant="secondary" onClick={onSignOut} disabled={signOutBusy}>{signOutBusy ? 'Signing out…' : 'Sign out'}</Button>
-        </div>
-      </section>
       <div className="honest-banner" role="note"><span aria-hidden="true">ⓘ</span><p><b>Prototype data, clearly labeled.</b> Catalog counts, purchases, and audit events come from live API endpoints and are stored by the backend, not in the browser. PayPal Sandbox payments are enabled with human approval.</p></div>
       <WorkspaceSecurityStatus />
       {!canImport ? <p className="muted-note">Vendor import is disabled for your role. Contact a workspace owner for access — this button is hidden by permission, enforced by the server.</p> : null}
@@ -1507,7 +1481,7 @@ function SettingsPage({ profile, theme, onThemeChange }) {
 }
 
 /* ================= Shell ================= */
-function AppShell({ page, profile, user, onSignOut, signOutBusy, signOutError, theme, onThemeChange, children, apiOnline }) {
+function AppShell({ page, profile, workspaceName, user, onSignOut, signOutBusy, signOutError, theme, onThemeChange, children, apiOnline }) {
   const groups = [
     {
       label: 'Buy', items: [
@@ -1545,7 +1519,7 @@ function AppShell({ page, profile, user, onSignOut, signOutBusy, signOutError, t
       <aside className={mobileOpen ? 'app-sidebar mobile-open' : 'app-sidebar'} aria-label="Primary navigation">
         <div className="sidebar-brand"><Logo light /><button className="sidebar-close" onClick={() => setMobileOpen(false)} aria-label="Close navigation">×</button></div>
         <div className="workspace-label">Workspace</div>
-        <div className="workspace-card"><span className="workspace-avatar">{(profile?.businessName || 'M').slice(0, 1).toUpperCase()}</span><span><b>{profile?.businessName || 'Workspace'}</b><small>Prototype workspace</small></span><span className="workspace-chevron" aria-hidden="true">⌄</span></div>
+        <div className="workspace-card"><span className="workspace-avatar">{(workspaceName || profile?.businessName || 'W').slice(0, 1).toUpperCase()}</span><span><b>{workspaceName || profile?.businessName || 'My workspace'}</b><small>Personal workspace</small></span><span className="workspace-chevron" aria-hidden="true">⌄</span></div>
         <nav className="app-nav">
           {groups.map((g) => (
             <div key={g.label}>
@@ -1572,8 +1546,36 @@ function AppShell({ page, profile, user, onSignOut, signOutBusy, signOutError, t
           <div className="breadcrumbs" aria-label="Breadcrumb"><span>Workspace</span><b aria-hidden="true">/</b><strong>{titles[page] || 'Overview'}</strong></div>
           <div className="topbar-right">
             <ThemeControl value={theme} onChange={onThemeChange} />
-            <span className="demo-chip">Prototype</span>
-            <button className="topbar-user" onClick={() => go('/app/settings/business')} title="Business settings">{(profile?.businessName || 'M').slice(0, 1).toUpperCase()}</button>
+            <div className="account-menu" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setAccountOpen(false); }}>
+              <button
+                type="button"
+                className="account-menu-trigger"
+                aria-haspopup="menu"
+                aria-expanded={accountOpen}
+                onClick={() => setAccountOpen((open) => !open)}
+              >
+                <span className="topbar-user">{(user?.fullName || user?.email || 'U').split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()}</span>
+                <span className="account-trigger-copy"><b>{user?.fullName || 'Account'}</b><small>{user?.email || ''}</small></span>
+                <span aria-hidden="true">⌄</span>
+              </button>
+              {accountOpen ? (
+                <div className="account-dropdown" role="menu" aria-label="Account menu">
+                  <div className="account-dropdown-identity">
+                    <b>{user?.fullName || 'Mandate user'}</b>
+                    <span>{user?.email || 'Email unavailable'}</span>
+                  </div>
+                  <dl>
+                    <div><dt>Signed in with</dt><dd>{user?.authProvider === 'google' ? 'Google' : 'Email and password'}</dd></div>
+                    <div><dt>Email verification</dt><dd><StatusBadge tone={user?.emailVerified ? 'ok' : 'warn'}>{user?.emailVerified ? 'Verified' : 'Not verified'}</StatusBadge></dd></div>
+                    <div><dt>Last sign-in</dt><dd>{user?.lastLoginAt && !Number.isNaN(Date.parse(user.lastLoginAt)) ? new Date(user.lastLoginAt).toLocaleString() : 'Not available'}</dd></div>
+                    <div><dt>Workspace</dt><dd>{workspaceName || 'My workspace'}</dd></div>
+                  </dl>
+                  <button type="button" className="account-dropdown-link" role="menuitem" onClick={() => { setAccountOpen(false); go('/app/settings/business'); }}>Workspace settings</button>
+                  <button type="button" className="account-dropdown-signout" role="menuitem" onClick={onSignOut} disabled={signOutBusy}>{signOutBusy ? 'Signing out…' : '↪  Sign out'}</button>
+                  {signOutError ? <p className="sidebar-signout-error" role="alert">{signOutError}</p> : null}
+                </div>
+              ) : null}
+            </div>
           </div>
         </header>
         <main className="app-content">{children}</main>
@@ -1595,6 +1597,10 @@ export default function App() {
   const [apiOnline, setApiOnline] = useState(false);
   const [signOutBusy, setSignOutBusy] = useState(false);
   const [signOutError, setSignOutError] = useState('');
+  const [sessionError, setSessionError] = useState('');
+  const [sessionAttempt, setSessionAttempt] = useState(0);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [workspaceName, setWorkspaceName] = useState('');
   const user = serverUser;
 
   useEffect(() => {
@@ -1621,6 +1627,7 @@ export default function App() {
   useEffect(() => {
     let alive = true;
     setSessionLoading(true);
+    setSessionError('');
     (async () => {
       try {
         try {
@@ -1643,28 +1650,29 @@ export default function App() {
             createdAt: session.user.createdAt || null,
             lastLoginAt: session.user.lastLoginAt || null,
           });
-          try {
-            const mine = await getMyWorkspaces().catch(() => null);
-            const list = mine?.memberships || [];
-            if (alive) setWorkspaces(list);
-            if (list.length > 0) {
-              const currentSelected = (() => { try { return localStorage.getItem('mandate.selected.tenant.v1') || ''; } catch { return ''; } })();
-              if (!currentSelected) setSelectedTenantId(list[0].tenantId);
-            }
-            const current = await getCurrentWorkspace().catch(() => null);
-            if (alive && current) setPermissions(current.permissions || current.membership?.permissions || null);
-          } catch { /* workspace display-only */ }
+          const mine = await getMyWorkspaces();
+          const list = Array.isArray(mine?.memberships) ? mine.memberships : [];
+          if (!alive) return;
+          if (!list.length) {
+            throw new Error('Your account is signed in, but no workspace is linked to it. Please sign in again or contact support.');
+          }
+          const storedSelection = (() => { try { return localStorage.getItem('mandate.selected.tenant.v1') || ''; } catch { return ''; } })();
+          const selected = list.find((item) => item.tenantId === storedSelection) || list[0];
+          setSelectedTenantId(selected.tenantId);
+          setWorkspaces(list);
+          setPermissions(selected.permissions || null);
+          setWorkspaceName(selected.businessName || 'My workspace');
         } else {
           setServerUser(null);
         }
-      } catch {
-        /* Session check failed; the user stays signed out. */
+      } catch (error) {
+        if (alive) setSessionError(error.message || 'Unable to validate your session. Please retry.');
       } finally {
         if (alive) setSessionLoading(false);
       }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [sessionAttempt]);
 
   useEffect(() => {
     const onPop = () => setPath(window.location.pathname);
@@ -1717,6 +1725,21 @@ export default function App() {
       </div>
     );
   }
+  if (sessionError && path.startsWith('/app')) {
+    return (
+      <div className="auth-page">
+        <main className="simple-message" role="alert">
+          <span className="eyebrow">Connection issue</span>
+          <h2>We couldn't finish loading your workspace.</h2>
+          <p className="muted-note">{sessionError}</p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+            <Button onClick={() => setSessionAttempt((value) => value + 1)}>Retry</Button>
+            <Button variant="secondary" onClick={() => go('/login')}>Back to sign in</Button>
+          </div>
+        </main>
+      </div>
+    );
+  }
   if (!user) return <LandingPage />;
   if (path === '/app/onboarding') return <Onboarding key={profile?.onboardingComplete ? 'edit' : 'new'} user={user} onComplete={complete} />;
 
@@ -1748,8 +1771,8 @@ export default function App() {
   return (
     <>
       {sessionBanner}
-      <AppShell page={page} profile={profile} user={user} onSignOut={signOut} signOutBusy={signOutBusy} signOutError={signOutError} theme={theme} onThemeChange={setTheme} apiOnline={apiOnline}>
-      {page === 'dashboard' ? <Dashboard profile={profile} user={user} permissions={permissions} onSignOut={signOut} signOutBusy={signOutBusy} signOutError={signOutError} onStartPurchase={() => go('/app/purchases/new')} />
+      <AppShell page={page} profile={profile} workspaceName={workspaceName} user={user} onSignOut={signOut} signOutBusy={signOutBusy} signOutError={signOutError} theme={theme} onThemeChange={setTheme} apiOnline={apiOnline}>
+      {page === 'dashboard' ? <Dashboard profile={profile} permissions={permissions} onStartPurchase={() => go('/app/purchases/new')} />
         : page === 'purchase' ? <PurchaseDesk defaults={profile} />
           : page === 'vendors' ? <CatalogPage />
             : page === 'import' ? <ImportPage onImported={handleImported} />
