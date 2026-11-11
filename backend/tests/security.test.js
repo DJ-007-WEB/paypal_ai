@@ -947,6 +947,10 @@ test('payment requires approval, uses the recommendation amount, and completes o
     assert.equal(paypal.calls.createOrder.length, 0);
 
     const approved = await purchaseStore.create(seedPurchase(tenantA.tenantId, 'purchase_approved_1', {
+      // PayPal Checkout does not support INR; use USD in this sandbox test
+      // so the test exercises approval/order/capture rather than currency rejection.
+      request: { productId: 'BRG-6204', quantity: 10, maxTotalMinor: 5000000, currency: 'USD', maxDeliveryDays: 5 },
+      recommendation: { offerId: 'offer-1', vendorId: 'vendor-1', totalMinor: 400000, currency: 'USD', score: 90 },
       approvalStatus: 'APPROVED',
       approval: { decision: 'APPROVED', approvedAt: new Date().toISOString(), approvedBy: 'owner' },
       authorization: { requiresHumanApproval: false, humanApproved: true, paymentAuthorized: false, paymentCaptured: false },
@@ -974,6 +978,9 @@ test('an unverified PayPal capture never marks the purchase paid', async () => {
   const { baseUrl, server, app, headersA, tenantA } = await startTwoTenantApp({ paypalService: paypal });
   try {
     const record = await app.__services.purchaseStore.create(seedPurchase(tenantA.tenantId, 'purchase_pending_capture', {
+      // Use a PayPal-supported currency to reach the capture verification path.
+      request: { productId: 'BRG-6204', quantity: 10, maxTotalMinor: 5000000, currency: 'USD', maxDeliveryDays: 5 },
+      recommendation: { offerId: 'offer-1', vendorId: 'vendor-1', totalMinor: 400000, currency: 'USD', score: 90 },
       approvalStatus: 'APPROVED',
       approval: { approvedAt: new Date().toISOString() },
       authorization: { requiresHumanApproval: false, humanApproved: true, paymentAuthorized: false, paymentCaptured: false },
