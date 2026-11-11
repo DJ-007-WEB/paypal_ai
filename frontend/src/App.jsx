@@ -1506,6 +1506,7 @@ function AppShell({ page, profile, workspaceName, user, onSignOut, signOutBusy, 
     },
   ];
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const active = page;
   const titles = { dashboard: 'Overview', purchase: 'Purchase desk', history: 'Purchase history', vendors: 'Supplier catalog', import: 'Import suppliers', policies: 'Policy controls', approvals: 'Approvals', audit: 'Audit trail', business: 'Workspace settings' };
   useEffect(() => {
@@ -1599,7 +1600,6 @@ export default function App() {
   const [signOutError, setSignOutError] = useState('');
   const [sessionError, setSessionError] = useState('');
   const [sessionAttempt, setSessionAttempt] = useState(0);
-  const [accountOpen, setAccountOpen] = useState(false);
   const [workspaceName, setWorkspaceName] = useState('');
   const user = serverUser;
 
