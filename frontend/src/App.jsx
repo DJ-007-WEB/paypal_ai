@@ -861,7 +861,7 @@ function WorkspaceSecurityStatus() {
 }
 
 /* ================= Dashboard ================= */
-function Dashboard({ profile, onStartPurchase, permissions }) {
+function Dashboard({ profile, user, onStartPurchase, permissions, onSignOut, signOutBusy, signOutError }) {
   const canImport = !permissions || permissions.includes('vendors:import');
   const [catalog, setCatalog] = useState(null);
   const [catalogError, setCatalogError] = useState('');
@@ -897,6 +897,32 @@ function Dashboard({ profile, onStartPurchase, permissions }) {
         </section>
         <section className="surface"><span className="step-kicker">Purchasing policies</span><h3>Defaults at a glance</h3><div className="compact-facts"><span>Default delivery<b>{profile?.deadline || '5'} days</b></span><span>Minimum quality<b>{profile?.quality || '70'}/100</b></span><span>Approved vendors<b>{profile?.approvedOnly ? 'Required' : 'Optional'}</b></span></div><small>Workspace preferences — request constraints are evaluated per purchase, not stored as server policy.</small><div style={{ marginTop: 10 }}><button className="inline-link" onClick={() => go('/app/policies')}>Review policy defaults →</button></div></section>
       </div>
+      <section className="surface account-panel" aria-labelledby="account-heading">
+        <div className="account-panel-heading">
+          <div>
+            <span className="step-kicker">Your account</span>
+            <h3 id="account-heading">Sign-in details</h3>
+            <p className="muted-note">Identity details are verified by the Mandate API session, not read from browser profile data.</p>
+          </div>
+          <StatusBadge tone="ok">Session active</StatusBadge>
+        </div>
+        <div className="account-details">
+          <div className="account-identity">
+            <span className="account-avatar" aria-hidden="true">{(user?.fullName || user?.email || 'U').split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()}</span>
+            <div><b>{user?.fullName || 'Mandate user'}</b><small>{user?.email || 'Email unavailable'}</small></div>
+          </div>
+          <dl className="account-facts">
+            <div><dt>Sign-in method</dt><dd>{user?.authProvider === 'google' ? 'Google' : 'Email and password'}</dd></div>
+            <div><dt>Email status</dt><dd><StatusBadge tone={user?.emailVerified ? 'ok' : 'warn'}>{user?.emailVerified ? 'Verified' : 'Not verified'}</StatusBadge></dd></div>
+            <div><dt>Last sign-in</dt><dd>{user?.lastLoginAt && !Number.isNaN(Date.parse(user.lastLoginAt)) ? new Date(user.lastLoginAt).toLocaleString() : 'Not available'}</dd></div>
+          </dl>
+        </div>
+        {signOutError ? <InlineAlert tone="error" title="Could not sign out">{signOutError}</InlineAlert> : null}
+        <div className="account-actions">
+          <span className="muted-note">You can safely end this session from here or the navigation panel.</span>
+          <Button type="button" variant="secondary" onClick={onSignOut} disabled={signOutBusy}>{signOutBusy ? 'Signing out…' : 'Sign out'}</Button>
+        </div>
+      </section>
       <div className="honest-banner" role="note"><span aria-hidden="true">ⓘ</span><p><b>Prototype data, clearly labeled.</b> Catalog counts, purchases, and audit events come from live API endpoints and are stored by the backend, not in the browser. PayPal Sandbox payments are enabled with human approval.</p></div>
       <WorkspaceSecurityStatus />
       {!canImport ? <p className="muted-note">Vendor import is disabled for your role. Contact a workspace owner for access — this button is hidden by permission, enforced by the server.</p> : null}
@@ -1481,7 +1507,7 @@ function SettingsPage({ profile, theme, onThemeChange }) {
 }
 
 /* ================= Shell ================= */
-function AppShell({ page, profile, user, onSignOut, theme, onThemeChange, children, apiOnline }) {
+function AppShell({ page, profile, user, onSignOut, signOutBusy, signOutError, theme, onThemeChange, children, apiOnline }) {
   const groups = [
     {
       label: 'Buy', items: [
@@ -1534,7 +1560,9 @@ function AppShell({ page, profile, user, onSignOut, theme, onThemeChange, childr
         </nav>
         <div className="sidebar-bottom">
           <div className="prototype-status"><span aria-hidden="true" />Sandbox mode<small>Approval-gated payments · {apiOnline ? 'API connected' : 'API status unknown'}</small></div>
-          <div className="sidebar-user"><span className="user-avatar">{(user?.fullName || 'D').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()}</span><span><b>{user?.fullName || 'Signed out'}</b><small>{user?.email || 'No server session'}</small></span><button aria-label="Sign out" title="Sign out" onClick={onSignOut}>↪</button></div>
+          <div className="sidebar-user"><span className="user-avatar">{(user?.fullName || 'U').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()}</span><span><b>{user?.fullName || 'Signed in'}</b><small>{user?.email || 'Account'}</small></span></div>
+          <button type="button" className="sidebar-signout" onClick={onSignOut} disabled={signOutBusy}>{signOutBusy ? 'Signing out…' : '↪  Sign out'}</button>
+          {signOutError ? <small className="sidebar-signout-error" role="alert">{signOutError}</small> : null}
         </div>
       </aside>
       {mobileOpen ? <button className="mobile-scrim" onClick={() => setMobileOpen(false)} aria-label="Close navigation" /> : null}
@@ -1565,6 +1593,8 @@ export default function App() {
   const [profile, setProfile] = useState(() => readStore());
   const [theme, setTheme] = useState(() => { try { const t = localStorage.getItem(THEME_KEY); return ['light', 'dark', 'system'].includes(t) ? t : 'system'; } catch { return 'system'; } });
   const [apiOnline, setApiOnline] = useState(false);
+  const [signOutBusy, setSignOutBusy] = useState(false);
+  const [signOutError, setSignOutError] = useState('');
   const user = serverUser;
 
   useEffect(() => {
@@ -1608,6 +1638,10 @@ export default function App() {
             fullName: session.user.displayName || session.user.email.split('@')[0],
             email: session.user.email,
             userId: session.user.userId,
+            emailVerified: Boolean(session.user.emailVerified),
+            authProvider: session.user.authProvider || 'local',
+            createdAt: session.user.createdAt || null,
+            lastLoginAt: session.user.lastLoginAt || null,
           });
           try {
             const mine = await getMyWorkspaces().catch(() => null);
@@ -1642,13 +1676,22 @@ export default function App() {
 
   function complete(profileData) { setProfile(profileData); saveStore(profileData); go('/app/dashboard'); }
   async function signOut() {
-    try { await apiLogout(); } catch { /* session may already be expired */ }
-    try { localStorage.removeItem('mandate.demo.session.v1'); } catch { /* ignore */ }
-    setServerUser(null);
-    setWorkspaces([]);
-    setPermissions(null);
-    setSelectedTenantId('');
-    go('/');
+    if (signOutBusy) return;
+    setSignOutBusy(true);
+    setSignOutError('');
+    try {
+      await apiLogout();
+      try { localStorage.removeItem('mandate.demo.session.v1'); } catch { /* ignore */ }
+      setServerUser(null);
+      setWorkspaces([]);
+      setPermissions(null);
+      setSelectedTenantId('');
+      go('/');
+    } catch (err) {
+      setSignOutError(err.message || 'The session could not be ended. Please retry.');
+    } finally {
+      setSignOutBusy(false);
+    }
   }
   function handleImported(result) {
     setProfile((prev) => {
@@ -1705,8 +1748,8 @@ export default function App() {
   return (
     <>
       {sessionBanner}
-      <AppShell page={page} profile={profile} user={user} onSignOut={signOut} theme={theme} onThemeChange={setTheme} apiOnline={apiOnline}>
-      {page === 'dashboard' ? <Dashboard profile={profile} permissions={permissions} onStartPurchase={() => go('/app/purchases/new')} />
+      <AppShell page={page} profile={profile} user={user} onSignOut={signOut} signOutBusy={signOutBusy} signOutError={signOutError} theme={theme} onThemeChange={setTheme} apiOnline={apiOnline}>
+      {page === 'dashboard' ? <Dashboard profile={profile} user={user} permissions={permissions} onSignOut={signOut} signOutBusy={signOutBusy} signOutError={signOutError} onStartPurchase={() => go('/app/purchases/new')} />
         : page === 'purchase' ? <PurchaseDesk defaults={profile} />
           : page === 'vendors' ? <CatalogPage />
             : page === 'import' ? <ImportPage onImported={handleImported} />
