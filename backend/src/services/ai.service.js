@@ -12,7 +12,7 @@
 const { CURRENCY_EXPONENTS, SUPPORTED_CURRENCIES } = require('./purchaseDecisionEngine');
 const { validatePurchaseRequest } = require('./validation.service');
 
-const DEFAULT_TIMEOUT_MS = 10000;
+const DEFAULT_TIMEOUT_MS = 20000;
 const DEFAULT_MAX_INPUT_CHARS = 4000;
 const MAX_PROVIDER_CONTENT_CHARS = 24000;
 const MAX_EXPLANATION_CHARS = 1800;
@@ -211,6 +211,10 @@ function mergeSuggestion(suggestion, defaults, warnings) {
   return request;
 }
 
+function safeProviderHost(value) {
+  try { return new URL(value).hostname.slice(0, 120); } catch { return 'invalid-url'; }
+}
+
 function createAiService({ config = {}, fetchImpl = globalThis.fetch } = {}) {
   const timeoutMs = Number.isInteger(config.AI_TIMEOUT_MS) ? config.AI_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
   const maxInputChars = Number.isInteger(config.AI_MAX_INPUT_CHARS) ? config.AI_MAX_INPUT_CHARS : DEFAULT_MAX_INPUT_CHARS;
@@ -246,6 +250,16 @@ function createAiService({ config = {}, fetchImpl = globalThis.fetch } = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref?.();
+    // Gemini 3.6+ ignores/rejects legacy sampling controls. Use low reasoning
+    // effort for short extraction tasks and omit temperature entirely.
+    const isGemini36OrLater = /^gemini-(?:3\.(?:6|7|8)|[4-9]\.)/i.test(model);
+    const requestBody = {
+      model,
+      messages,
+      max_tokens: maxTokens,
+      ...(isGemini36OrLater ? { reasoning_effort: 'low' } : { temperature: 0 }),
+      ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+    };
     let response;
     try {
       response = await fetchImpl(`${baseUrl}/chat/completions`, {
@@ -254,24 +268,33 @@ function createAiService({ config = {}, fetchImpl = globalThis.fetch } = {}) {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: 0,
-          max_tokens: maxTokens,
-          ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
     } catch (err) {
       if (controller.signal.aborted) throw timeoutError();
-      throw providerError();
+      const error = providerError();
+      console.error(`[AI] provider_transport_failed host=${safeProviderHost(baseUrl)} model=${model.slice(0, 100)} cause=${String(err?.name || 'unknown').slice(0, 60)}`);
+      throw error;
     } finally {
       clearTimeout(timer);
     }
-
-    if (!response || !response.ok) throw providerError();
-
+    if (!response || !response.ok) {
+      let providerCode = null;
+      let providerStatusText = null;
+      try {
+        const body = await response.clone().json();
+        providerCode = body?.error?.code ?? body?.error?.status ?? body?.code ?? null;
+        providerStatusText = body?.error?.status ?? body?.status ?? null;
+      } catch { /* never log provider response bodies */ }
+      const error = providerError({
+        providerStatus: response?.status,
+        providerCode: providerCode === null ? null : String(providerCode),
+        providerStatusText,
+      });
+      console.error(`[AI] provider_rejected_request status=${error.providerStatus || 'unknown'} providerCode=${error.providerCode || 'unknown'} providerStatusText=${error.providerStatusText || 'unknown'} host=${safeProviderHost(baseUrl)} model=${model.slice(0, 100)}`);
+      throw error;
+    }
     let payload;
     try {
       payload = await response.json();
