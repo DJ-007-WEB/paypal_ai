@@ -108,9 +108,12 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
       event: 'oidc_callback_failed',
       reason: String(reason || 'unknown'),
       requestId: req.requestId || null,
-      errorCode: err && typeof err.code === 'string' ? err.code : null,
+      errorCode: err && (typeof err.code === 'string' || typeof err.code === 'number') ? err.code : null,
       errorName: err && typeof err.name === 'string' ? err.name : null,
       statusCode: err && Number.isInteger(err.statusCode) ? err.statusCode : null,
+      providerError: err && typeof err.error === 'string' ? err.error.slice(0, 100) : null,
+      providerStatus: err && Number.isInteger(err.response?.status) ? err.response.status : null,
+      causeCode: err && typeof err.cause?.code === 'string' ? err.cause.code : null,
     };
     console.error(`[AUTH] ${JSON.stringify(entry)}`);
   }
