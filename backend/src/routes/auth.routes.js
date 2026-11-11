@@ -456,10 +456,28 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
       if (!session) return res.json({ success: true, data: { authenticated: false } });
       const user = await userService.findById(session.userId);
       if (!user || user.status !== 'active') return res.json({ success: true, data: { authenticated: false } });
+      // Idempotently repair/provision the personal workspace during session
+      // restoration too, so legacy accounts never reach protected pages tenantless.
+      await maybeCreateFirstWorkspace({ user, tenantService });
+      const memberships = await tenantService.listMembershipsForUser(user.userId);
+      const workspaces = [];
+      for (const membership of memberships) {
+        const tenant = await tenantService.getTenant(membership.tenantId);
+        if (tenant && tenant.status === 'active') {
+          workspaces.push({
+            tenantId: tenant.tenantId,
+            businessName: tenant.businessName,
+            businessEmail: tenant.businessEmail || '',
+            role: membership.role,
+            permissions: membership.permissions || [],
+          });
+        }
+      }
       return res.json({
         success: true,
         data: {
           authenticated: true,
+          workspaces,
           user: {
             userId: user.userId,
             email: user.email,
