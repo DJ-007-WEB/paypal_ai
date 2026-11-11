@@ -199,7 +199,13 @@ function createApp(options = {}) {
   // --- Auth flow (special: no tenant until membership resolved) ---
   const authRouter = createAuthRoutes({ config, userService, sessionStore, auditService, tenantService, oidcExchange, oauthTransactionStore });
   // Auth start/callback rate-limited strictly
-  app.use('/api', authLimiter, authRouter);
+  // Session reads and CSRF bootstrap are not sign-in attempts. They remain
+  // protected by the general API limiter; only auth mutations/OAuth flows
+  // consume the stricter authentication quota.
+  app.use('/api', (req, res, next) => {
+    if (req.method === 'GET' && (req.path === '/auth/session' || req.path === '/auth/csrf')) return next();
+    return authLimiter(req, res, next);
+  }, authRouter);
   // Session/logout JSON endpoints also under /api but with general limiter already; mount separately for clarity
   // (authRouter already mounted; the limiter above covers all /api/auth/* — acceptable.)
 
