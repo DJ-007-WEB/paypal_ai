@@ -184,6 +184,7 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
   // Local email/password sign-up. Creates an isolated personal workspace using
   // only the new server-side user ID; client-supplied tenant IDs are ignored.
   router.post('/auth/register', async (req, res, next) => {
+    let failedOperation = 'validate_registration';
     try {
       const email = normalizeEmail(req.body?.email);
       const password = typeof req.body?.password === 'string' ? req.body.password : '';
@@ -194,9 +195,11 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
         throw authError('Use a password between 12 and 128 characters.', 400, 'INVALID_PASSWORD');
       }
       const displayName = cleanText(req.body?.displayName) || email.split('@')[0];
+      failedOperation = 'hash_password';
       const passwordHash = await hashPassword(password);
       let user;
       try {
+        failedOperation = 'create_local_user';
         user = await userService.createLocalUser({ email, passwordHash, displayName });
       } catch (err) {
         if (err.code === 'EMAIL_IN_USE') {
@@ -207,14 +210,28 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
         }
         throw err;
       }
+      failedOperation = 'create_workspace';
       await maybeCreateFirstWorkspace({
         user,
         tenantService,
         businessName: cleanText(req.body?.businessName) || undefined,
       });
+      failedOperation = 'create_session';
       await safeAudit('SIGN_UP_SUCCEEDED', { actorId: user.userId });
       return await establishSession(res, user, 201);
-    } catch (err) { next(err); }
+    } catch (err) {
+      if (!err || err.code !== 'EMAIL_IN_USE') {
+        console.error('[AUTH] registration_failed', JSON.stringify({
+          requestId: req.requestId || null,
+          operation: failedOperation,
+          errorName: err && typeof err.name === 'string' ? err.name : null,
+          errorCode: err && (typeof err.code === 'string' || typeof err.code === 'number') ? err.code : null,
+          mongoCode: err && Number.isInteger(err.code) ? err.code : null,
+          keyPattern: err && err.keyPattern && typeof err.keyPattern === 'object' ? err.keyPattern : null,
+        }));
+      }
+      next(err);
+    }
   });
 
   // Local email/password sign-in. Missing users still perform a scrypt check so
