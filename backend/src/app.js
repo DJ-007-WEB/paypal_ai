@@ -143,7 +143,15 @@ function createApp(options = {}) {
   // --- Body limits + timeouts ---
   app.use(express.json({ limit: config.MAX_JSON_BODY_BYTES }));
   app.use((req, res, next) => {
-    // Bounded request timeout (30s)
+    // AI requests must be allowed to reach the provider timeout configured in
+    // AI_TIMEOUT_MS. The previous fixed 30s application deadline aborted these
+    // requests while the AI service was still waiting (45s by default).
+    const isAiRequest = req.method === 'POST'
+      && (/^\/api\/purchases\/interpret\/?$/.test(req.path)
+        || /^\/api\/purchases\/[^/]+\/explain\/?$/.test(req.path));
+    const requestTimeoutMs = isAiRequest
+      ? config.AI_TIMEOUT_MS + 10000
+      : 30000;
     const timer = setTimeout(() => {
       if (!res.headersSent) {
         const err = new Error('Request timed out.');
@@ -151,9 +159,10 @@ function createApp(options = {}) {
         err.code = 'REQUEST_TIMEOUT';
         next(err);
       }
-    }, 30000);
+    }, requestTimeoutMs);
     timer.unref?.();
     res.on('finish', () => clearTimeout(timer));
+    res.on('close', () => clearTimeout(timer));
     next();
   });
 
