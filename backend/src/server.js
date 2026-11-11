@@ -51,7 +51,7 @@ async function start() {
   const oauthTransactionCollection = db.collection('oauthTransactions');
   const webhookEventCollection = db.collection('paypalWebhookEvents');
   try { await userCollection.createIndex({ userId: 1 }, { unique: true }); } catch { /* ignore */ }
-  try { await userCollection.createIndex({ googleSubject: 1 }, { unique: true }); } catch { /* ignore */ }
+  try { await userCollection.createIndex({ googleSubject: 1 }, { unique: true, partialFilterExpression: { googleSubject: { $type: 'string' } } }); } catch (err) { console.warn('[DB] Google subject index skipped (inspect existing index/migration):', err.message); }
   // Local email/password accounts must not share an email. Partial so existing
   // Google-only users are unaffected by the unique constraint.
   try {
