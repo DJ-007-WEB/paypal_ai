@@ -104,8 +104,21 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
   // Structured failure logs contain only an allowlisted reason, request ID, and
   // error metadata. Never log query strings, codes, state, cookies, tokens, or PII.
   function logAuthFailure(req, reason, err) {
+    // Classify the innermost OAuth error without logging raw provider messages.
+    const nestedCauseText = [err?.cause?.message, err?.cause?.cause?.message]
+      .filter((value) => typeof value === 'string').join(' ').toLowerCase();
+    const causeClass = /nonce/.test(nestedCauseText) ? 'nonce_validation'
+      : /state/.test(nestedCauseText) ? 'state_validation'
+        : /id.?token|identity token/.test(nestedCauseText) ? 'id_token_validation'
+          : /audience|\\baud\\b/.test(nestedCauseText) ? 'audience_validation'
+            : /issuer|\\biss\\b/.test(nestedCauseText) ? 'issuer_validation'
+              : /redirect.?uri/.test(nestedCauseText) ? 'redirect_uri'
+                : /verifier|pkce|code challenge/.test(nestedCauseText) ? 'pkce_validation'
+                  : /json|content.?type|parse|response body/.test(nestedCauseText) ? 'malformed_provider_response'
+                    : nestedCauseText ? 'oauth_response_processing' : 'no_nested_cause';
     const entry = {
       event: 'oidc_callback_failed',
+      causeClass,
       reason: String(reason || 'unknown'),
       requestId: req.requestId || null,
       errorCode: err && (typeof err.code === 'string' || typeof err.code === 'number') ? err.code : null,
@@ -119,6 +132,9 @@ function createAuthRoutes({ config, userService, sessionStore, auditService, ten
       providerStatus: err && Number.isInteger(err.response?.status) ? err.response.status : null,
       causeCode: err && typeof err.cause?.code === 'string' ? err.cause.code : null,
       causeName: err && typeof err.cause?.name === 'string' ? err.cause.name : null,
+      nestedCauseCode: err && typeof err.cause?.cause?.code === 'string' ? err.cause.cause.code : null,
+      nestedCauseName: err && typeof err.cause?.cause?.name === 'string' ? err.cause.cause.name : null,
+      nestedCauseResponseStatus: err && Number.isInteger(err.cause?.cause?.response?.status) ? err.cause.cause.response.status : null,
       oauthResponseStatus: err && Number.isInteger(err.cause?.response?.status) ? err.cause.response.status : null,
       oauthResponseContentType: err && typeof err.cause?.response?.headers?.get === 'function'
         ? String(err.cause.response.headers.get('content-type') || '').slice(0, 80) : null,
