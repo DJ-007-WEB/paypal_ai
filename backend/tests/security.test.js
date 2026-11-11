@@ -789,6 +789,9 @@ test('Google login succeeds with the transaction cookie and preserves state, non
     const sessionBody = await sessionRes.json();
     assert.equal(sessionBody.data.authenticated, true);
     assert.equal(sessionBody.data.user.email, 'user@example.com');
+    assert.equal(sessionBody.data.workspaces.length, 1, 'Google sign-in must provision a personal workspace');
+    assert.equal(sessionBody.data.workspaces[0].role, 'owner');
+    assert.ok(sessionBody.data.workspaces[0].tenantId);
     assert.equal(sessionBody.data.user.authProvider, 'google');
     assert.equal(sessionBody.data.user.emailVerified, true);
     assert.ok(sessionBody.data.user.lastLoginAt);
