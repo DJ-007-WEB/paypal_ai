@@ -1585,7 +1585,9 @@ export default function App() {
     getHealth().then(() => setApiOnline(true)).catch(() => setApiOnline(false));
   }, [path]);
 
-  // API-validated session replaces local-storage authority for server data.
+  // Validate once on application mount, not on every client-side navigation.
+  // A route transition must not reset the authenticated session or trigger
+  // additional rate-limited requests.
   useEffect(() => {
     let alive = true;
     setSessionLoading(true);
@@ -1628,7 +1630,7 @@ export default function App() {
       }
     })();
     return () => { alive = false; };
-  }, [path]);
+  }, []);
 
   useEffect(() => {
     const onPop = () => setPath(window.location.pathname);
