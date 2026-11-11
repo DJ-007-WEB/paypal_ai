@@ -252,11 +252,12 @@ function createAiService({ config = {}, fetchImpl = globalThis.fetch } = {}) {
   async function chatCompletion({ messages, maxTokens, jsonMode = false }) {
     requireEnabled();
     const controller = new AbortController();
+    const startedAt = Date.now();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref?.();
     // Gemini 3.6+ ignores/rejects legacy sampling controls. Use low reasoning
     // effort for short extraction tasks and omit temperature entirely.
-    const isGemini36OrLater = /generativelanguage\.googleapis\.com/i.test(baseUrl) && /^gemini-(?:3\.(?:6|7|8)|[4-9]\.)/i.test(model);
+    const isGemini36OrLater = /generativelanguage\\.googleapis\\.com/i.test(baseUrl) && /^gemini-(?:3\\.(?:6|7|8)|[4-9]\\.)/i.test(model);
     const requestBody = {
       model,
       messages,
@@ -264,59 +265,70 @@ function createAiService({ config = {}, fetchImpl = globalThis.fetch } = {}) {
       ...(isGemini36OrLater ? { reasoning_effort: 'low' } : { temperature: 0 }),
       ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
     };
-    let response;
+
     try {
-      response = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
-    } catch (err) {
-      if (controller.signal.aborted) {
-        console.error(`[AI] provider_timeout host=${safeProviderHost(baseUrl)} model=${model.slice(0, 100)} timeoutMs=${timeoutMs}`);
-        throw timeoutError();
+      let response;
+      try {
+        response = await fetchImpl(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (controller.signal.aborted || err?.name === 'AbortError') {
+          console.error(`[AI] provider_timeout host=${safeProviderHost(baseUrl)} model=${model.slice(0, 100)} timeoutMs=${timeoutMs} elapsedMs=${Date.now() - startedAt}`);
+          throw timeoutError();
+        }
+        const error = providerError();
+        console.error(`[AI] provider_transport_failed host=${safeProviderHost(baseUrl)} model=${model.slice(0, 100)} cause=${String(err?.name || 'unknown').slice(0, 60)} elapsedMs=${Date.now() - startedAt}`);
+        throw error;
       }
-      const error = providerError();
-      console.error(`[AI] provider_transport_failed host=${safeProviderHost(baseUrl)} model=${model.slice(0, 100)} cause=${String(err?.name || 'unknown').slice(0, 60)}`);
-      throw error;
+
+      if (!response || !response.ok) {
+        let providerCode = null;
+        let providerStatusText = null;
+        try {
+          const body = await response.clone().json();
+          providerCode = body?.error?.code ?? body?.error?.status ?? body?.code ?? null;
+          providerStatusText = body?.error?.status ?? body?.status ?? null;
+        } catch { /* never log provider response bodies */ }
+        const error = providerError({
+          providerStatus: response?.status,
+          providerCode: providerCode === null ? null : String(providerCode),
+          providerStatusText,
+        });
+        console.error(`[AI] provider_rejected_request status=${error.providerStatus || 'unknown'} providerCode=${error.providerCode || 'unknown'} providerStatusText=${error.providerStatusText || 'unknown'} host=${safeProviderHost(baseUrl)} model=${model.slice(0, 100)} elapsedMs=${Date.now() - startedAt}`);
+        throw error;
+      }
+
+      let payload;
+      try {
+        // Keep the same timeout active while consuming the response body too.
+        payload = await response.json();
+      } catch (err) {
+        if (controller.signal.aborted || err?.name === 'AbortError') {
+          console.error(`[AI] provider_body_timeout host=${safeProviderHost(baseUrl)} model=${model.slice(0, 100)} timeoutMs=${timeoutMs} elapsedMs=${Date.now() - startedAt}`);
+          throw timeoutError();
+        }
+        throw invalidResponseError();
+      }
+
+      const message = payload?.choices?.[0]?.message;
+      let content = message?.content;
+      if (Array.isArray(content)) {
+        content = content.map((part) => (typeof part === 'string' ? part : part?.text || '')).join('');
+      }
+      const text = cleanText(content);
+      if (!text) throw invalidResponseError();
+      console.info(`[AI] provider_success host=${safeProviderHost(baseUrl)} model=${model.slice(0, 100)} elapsedMs=${Date.now() - startedAt}`);
+      return text;
     } finally {
       clearTimeout(timer);
     }
-    if (!response || !response.ok) {
-      let providerCode = null;
-      let providerStatusText = null;
-      try {
-        const body = await response.clone().json();
-        providerCode = body?.error?.code ?? body?.error?.status ?? body?.code ?? null;
-        providerStatusText = body?.error?.status ?? body?.status ?? null;
-      } catch { /* never log provider response bodies */ }
-      const error = providerError({
-        providerStatus: response?.status,
-        providerCode: providerCode === null ? null : String(providerCode),
-        providerStatusText,
-      });
-      console.error(`[AI] provider_rejected_request status=${error.providerStatus || 'unknown'} providerCode=${error.providerCode || 'unknown'} providerStatusText=${error.providerStatusText || 'unknown'} host=${safeProviderHost(baseUrl)} model=${model.slice(0, 100)}`);
-      throw error;
-    }
-    let payload;
-    try {
-      payload = await response.json();
-    } catch {
-      throw invalidResponseError();
-    }
-
-    const message = payload?.choices?.[0]?.message;
-    let content = message?.content;
-    if (Array.isArray(content)) {
-      content = content.map((part) => (typeof part === 'string' ? part : part?.text || '')).join('');
-    }
-    const text = cleanText(content);
-    if (!text) throw invalidResponseError();
-    return text;
   }
 
   async function parsePurchaseRequest({ text, defaults } = {}) {
