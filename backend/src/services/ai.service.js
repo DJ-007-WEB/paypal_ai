@@ -66,8 +66,12 @@ function timeoutError() {
   return aiError('The AI service timed out. Enter the request manually or try again.', 504, 'AI_TIMEOUT');
 }
 
-function providerError() {
-  return aiError('The AI service could not complete the request. Enter the request manually or try again.', 502, 'AI_PROVIDER_ERROR');
+function providerError(details = {}) {
+  const error = aiError('The AI service could not complete the request. Enter the request manually or try again.', 502, 'AI_PROVIDER_ERROR');
+  error.providerStatus = Number.isInteger(details.providerStatus) ? details.providerStatus : null;
+  error.providerCode = typeof details.providerCode === 'string' ? details.providerCode.slice(0, 80) : null;
+  error.providerStatusText = typeof details.providerStatusText === 'string' ? details.providerStatusText.slice(0, 80) : null;
+  return error;
 }
 
 function invalidResponseError() {
@@ -252,7 +256,7 @@ function createAiService({ config = {}, fetchImpl = globalThis.fetch } = {}) {
     timer.unref?.();
     // Gemini 3.6+ ignores/rejects legacy sampling controls. Use low reasoning
     // effort for short extraction tasks and omit temperature entirely.
-    const isGemini36OrLater = /^gemini-(?:3\.(?:6|7|8)|[4-9]\.)/i.test(model);
+    const isGemini36OrLater = /generativelanguage\\.googleapis\\.com/i.test(baseUrl) && /^gemini-(?:3\.(?:6|7|8)|[4-9]\.)/i.test(model);
     const requestBody = {
       model,
       messages,
@@ -272,7 +276,10 @@ function createAiService({ config = {}, fetchImpl = globalThis.fetch } = {}) {
         signal: controller.signal,
       });
     } catch (err) {
-      if (controller.signal.aborted) throw timeoutError();
+      if (controller.signal.aborted) {
+        console.error(`[AI] provider_timeout host=${safeProviderHost(baseUrl)} model=${model.slice(0, 100)} timeoutMs=${timeoutMs}`);
+        throw timeoutError();
+      }
       const error = providerError();
       console.error(`[AI] provider_transport_failed host=${safeProviderHost(baseUrl)} model=${model.slice(0, 100)} cause=${String(err?.name || 'unknown').slice(0, 60)}`);
       throw error;
